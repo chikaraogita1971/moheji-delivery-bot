@@ -1,0 +1,60 @@
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(200).send("OK");
+  }
+
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const message = req.body?.message;
+
+  if (!token || !message) {
+    return res.status(200).send("OK");
+  }
+
+  const text = message.text || "";
+  const chatId = message.chat.id;
+
+  const match = text.match(/^\/sales\s+(\d+)\s+(\d+)$/);
+
+  if (!match) {
+    return res.status(200).send("OK");
+  }
+
+  const sales = Number(match[1]);
+  const orders = Number(match[2]);
+
+  const circles = "●".repeat(Math.floor(sales / 500));
+
+  const now = new Date();
+
+  const date = new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(now);
+
+  const messageText =
+`配達売上！
+
+${sales.toLocaleString()}円
+${circles}
+${orders}件
+${date}
+
+お疲れ様でした。`;
+
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: messageText
+    })
+  });
+
+  return res.status(200).send("OK");
+}
