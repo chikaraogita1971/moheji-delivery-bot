@@ -23,9 +23,9 @@ module.exports = async function handler(req, res) {
       return res.status(500).send("REDIS MISSING");
     }
 
-    // =============================
+    // ========================================
     // Telegram受信
-    // =============================
+    // ========================================
 
     let rawBody = "";
 
@@ -50,18 +50,18 @@ module.exports = async function handler(req, res) {
     console.log("CHAT_ID:", chatId);
     console.log("TEXT:", text);
 
-    // =============================
-    // コマンド解析
+    // ========================================
+    // コマンド
+    //
     // /sales 5000 12
     // /cancel 5000 12
-    // =============================
+    // ========================================
 
     const match = text.match(
       /^\/(sales|cancel)(?:@\S+)?\s+(\d+)\s+(\d+)$/
     );
 
     if (!match) {
-      console.log("NOT SALES/CANCEL COMMAND");
       return res.status(200).send("OK");
     }
 
@@ -69,13 +69,22 @@ module.exports = async function handler(req, res) {
     const inputSales = Number(match[2]);
     const inputOrders = Number(match[3]);
 
-    if (inputSales < 0 || inputOrders < 0) {
+    if (
+      !Number.isFinite(inputSales) ||
+      !Number.isFinite(inputOrders) ||
+      inputSales < 0 ||
+      inputOrders < 0
+    ) {
       return res.status(200).send("OK");
     }
 
-    // /sales = 加算
-    // /cancel = 減算
-    const sign = command === "cancel" ? -1 : 1;
+    // sales = 加算
+    // cancel = 減算
+
+    const sign =
+      command === "cancel"
+        ? -1
+        : 1;
 
     const sales = inputSales * sign;
     const orders = inputOrders * sign;
@@ -84,9 +93,9 @@ module.exports = async function handler(req, res) {
     console.log("SALES:", sales);
     console.log("ORDERS:", orders);
 
-    // =============================
+    // ========================================
     // 東京時間
-    // =============================
+    // ========================================
 
     const now = new Date();
 
@@ -100,8 +109,13 @@ module.exports = async function handler(req, res) {
     }).formatToParts(now);
 
     const getPart = (type) => {
-      const part = parts.find((p) => p.type === type);
-      return part ? part.value : "";
+      const part = parts.find(
+        (p) => p.type === type
+      );
+
+      return part
+        ? part.value
+        : "";
     };
 
     const year = getPart("year");
@@ -110,42 +124,58 @@ module.exports = async function handler(req, res) {
     const hour = getPart("hour");
     const minute = getPart("minute");
 
-    const yearMonth = `${year}-${month}`;
-    const dateKey = `${yearMonth}-${day}`;
+    const yearMonth =
+      `${year}-${month}`;
+
+    const dateKey =
+      `${yearMonth}-${day}`;
 
     const displayDate =
       `${year}/${month}/${day} ${hour}:${minute}`;
 
-    // =============================
+    // ========================================
     // Redis
-    // =============================
+    // ========================================
 
     async function redisCommand(command) {
-      const response = await fetch(redisUrl, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${redisToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(command)
-      });
+      const response = await fetch(
+        redisUrl,
+        {
+          method: "POST",
+          headers: {
+            Authorization:
+              `Bearer ${redisToken}`,
+            "Content-Type":
+              "application/json"
+          },
+          body: JSON.stringify(command)
+        }
+      );
 
-      const result = await response.json();
+      const result =
+        await response.json();
 
-      console.log("REDIS RESULT:", result);
+      console.log(
+        "REDIS RESULT:",
+        result
+      );
 
-      if (!response.ok || result.error) {
+      if (
+        !response.ok ||
+        result.error
+      ) {
         throw new Error(
-          result.error || "Redis command failed"
+          result.error ||
+          "Redis command failed"
         );
       }
 
       return result.result;
     }
 
-    // =============================
+    // ========================================
     // Redisキー
-    // =============================
+    // ========================================
 
     const monthlyKey =
       `moheji:delivery:month:${yearMonth}`;
@@ -162,9 +192,9 @@ module.exports = async function handler(req, res) {
     const totalKey =
       `moheji:delivery:total`;
 
-    // =============================
-    // 今月累計
-    // =============================
+    // ========================================
+    // 月間
+    // ========================================
 
     const monthlySales =
       await redisCommand([
@@ -182,9 +212,9 @@ module.exports = async function handler(req, res) {
         orders
       ]);
 
-    // =============================
-    // 年間累計
-    // =============================
+    // ========================================
+    // 年間
+    // ========================================
 
     const yearlySales =
       await redisCommand([
@@ -202,11 +232,11 @@ module.exports = async function handler(req, res) {
         orders
       ]);
 
-    // =============================
-    // 今日の累計
-    // =============================
+    // ========================================
+    // 今日
+    // ========================================
 
-    const todaySales =
+    let todaySales =
       await redisCommand([
         "HINCRBY",
         dailyKey,
@@ -214,7 +244,7 @@ module.exports = async function handler(req, res) {
         sales
       ]);
 
-    const todayOrders =
+    let todayOrders =
       await redisCommand([
         "HINCRBY",
         dailyKey,
@@ -222,11 +252,107 @@ module.exports = async function handler(req, res) {
         orders
       ]);
 
-    // =============================
-    // 累計配達件数
-    // =============================
+    todaySales =
+      Number(todaySales);
 
-    const totalOrders =
+    todayOrders =
+      Number(todayOrders);
+
+    // ========================================
+    // マイナス防止
+    // ========================================
+
+    if (todaySales < 0) {
+      await redisCommand([
+        "HSET",
+        dailyKey,
+        "sales",
+        0
+      ]);
+
+      todaySales = 0;
+    }
+
+    if (todayOrders < 0) {
+      await redisCommand([
+        "HSET",
+        dailyKey,
+        "orders",
+        0
+      ]);
+
+      todayOrders = 0;
+    }
+
+    // ========================================
+    // 月間マイナス防止
+    // ========================================
+
+    let safeMonthlySales =
+      Number(monthlySales);
+
+    let safeMonthlyOrders =
+      Number(monthlyOrders);
+
+    if (safeMonthlySales < 0) {
+      await redisCommand([
+        "HSET",
+        monthlyKey,
+        "sales",
+        0
+      ]);
+
+      safeMonthlySales = 0;
+    }
+
+    if (safeMonthlyOrders < 0) {
+      await redisCommand([
+        "HSET",
+        monthlyKey,
+        "orders",
+        0
+      ]);
+
+      safeMonthlyOrders = 0;
+    }
+
+    // ========================================
+    // 年間マイナス防止
+    // ========================================
+
+    let safeYearlySales =
+      Number(yearlySales);
+
+    let safeYearlyOrders =
+      Number(yearlyOrders);
+
+    if (safeYearlySales < 0) {
+      await redisCommand([
+        "HSET",
+        yearlyKey,
+        "sales",
+        0
+      ]);
+
+      safeYearlySales = 0;
+    }
+
+    if (safeYearlyOrders < 0) {
+      await redisCommand([
+        "HSET",
+        yearlyKey,
+        "orders",
+        0
+      ]);
+
+      safeYearlyOrders = 0;
+    }
+
+    // ========================================
+    // 累計配達件数
+    // ========================================
+
+    let totalOrders =
       await redisCommand([
         "HINCRBY",
         totalKey,
@@ -234,13 +360,30 @@ module.exports = async function handler(req, res) {
         orders
       ]);
 
-    // =============================
-    // 稼働日判定
-    // =============================
+    totalOrders =
+      Number(totalOrders);
 
-    let workingDays = 0;
+    if (totalOrders < 0) {
+      await redisCommand([
+        "HSET",
+        totalKey,
+        "orders",
+        0
+      ]);
 
-    if (Number(todaySales) !== 0 || Number(todayOrders) !== 0) {
+      totalOrders = 0;
+    }
+
+    // ========================================
+    // 稼働日数
+    // 今日に売上または件数があれば稼働日
+    // 両方0なら稼働日から削除
+    // ========================================
+
+    if (
+      todaySales > 0 ||
+      todayOrders > 0
+    ) {
       await redisCommand([
         "SADD",
         workingDaysKey,
@@ -254,15 +397,17 @@ module.exports = async function handler(req, res) {
       ]);
     }
 
-    workingDays =
-      await redisCommand([
-        "SCARD",
-        workingDaysKey
-      ]);
+    const workingDays =
+      Number(
+        await redisCommand([
+          "SCARD",
+          workingDaysKey
+        ])
+      );
 
-    // =============================
-    // 月間最高売上を取得
-    // =============================
+    // ========================================
+    // 月間最高値
+    // ========================================
 
     const maxSalesKey =
       `moheji:delivery:maxsales:${yearMonth}`;
@@ -270,200 +415,326 @@ module.exports = async function handler(req, res) {
     const maxOrdersKey =
       `moheji:delivery:maxorders:${yearMonth}`;
 
-    let maxDailySales =
-      Number(
-        await redisCommand([
-          "GET",
-          maxSalesKey
-        ]) || 0
-      );
+    // ========================================
+    // 月内の日付一覧を取得
+    // ========================================
 
-    let maxDailyOrders =
-      Number(
-        await redisCommand([
-          "GET",
-          maxOrdersKey
-        ]) || 0
-      );
-
-    // =============================
-    // 最高値を更新
-    // =============================
-
-    if (Number(todaySales) > maxDailySales) {
-      maxDailySales = Number(todaySales);
-
+    const workingDates =
       await redisCommand([
-        "SET",
-        maxSalesKey,
-        maxDailySales
+        "SMEMBERS",
+        workingDaysKey
       ]);
+
+    let maxDailySales = 0;
+    let maxDailyOrders = 0;
+
+    if (
+      Array.isArray(workingDates) &&
+      workingDates.length > 0
+    ) {
+      for (
+        const workingDate
+        of workingDates
+      ) {
+        const checkDailyKey =
+          `moheji:delivery:day:${workingDate}`;
+
+        const checkSales =
+          await redisCommand([
+            "HGET",
+            checkDailyKey,
+            "sales"
+          ]);
+
+        const checkOrders =
+          await redisCommand([
+            "HGET",
+            checkDailyKey,
+            "orders"
+          ]);
+
+        const dailySalesValue =
+          Number(checkSales || 0);
+
+        const dailyOrdersValue =
+          Number(checkOrders || 0);
+
+        if (
+          dailySalesValue >
+          maxDailySales
+        ) {
+          maxDailySales =
+            dailySalesValue;
+        }
+
+        if (
+          dailyOrdersValue >
+          maxDailyOrders
+        ) {
+          maxDailyOrders =
+            dailyOrdersValue;
+        }
+      }
     }
 
-    if (Number(todayOrders) > maxDailyOrders) {
-      maxDailyOrders = Number(todayOrders);
+    // ========================================
+    // 最高値保存
+    // ========================================
 
-      await redisCommand([
-        "SET",
-        maxOrdersKey,
-        maxDailyOrders
-      ]);
-    }
+    await redisCommand([
+      "SET",
+      maxSalesKey,
+      maxDailySales
+    ]);
 
-    // =============================
+    await redisCommand([
+      "SET",
+      maxOrdersKey,
+      maxDailyOrders
+    ]);
+
+    // ========================================
     // 平均売上／日
-    // =============================
+    // ========================================
 
     const averageSalesPerDay =
-      Number(workingDays) > 0
+      workingDays > 0
         ? Math.round(
-            Number(monthlySales) /
-            Number(workingDays)
+            safeMonthlySales /
+            workingDays
           )
         : 0;
 
-    // =============================
+    // ========================================
     // 1件あたり
-    // =============================
+    //
+    // 「今日の累計売上 ÷ 今日の累計件数」
+    // ========================================
 
     const perOrder =
-      inputOrders > 0
-        ? Math.round(inputSales / inputOrders)
+      todayOrders > 0
+        ? Math.round(
+            todaySales /
+            todayOrders
+          )
         : 0;
 
-    // =============================
-    // 月間目標 50万円
-    // =============================
+    // ========================================
+    // 月間目標
+    // ========================================
 
-    const targetSales = 500000;
+    const targetSales =
+      500000;
 
     const achievementRate =
       targetSales > 0
         ? Math.round(
-            (Number(monthlySales) /
-              targetSales) *
-              1000
+            (
+              safeMonthlySales /
+              targetSales
+            ) * 1000
           ) / 10
         : 0;
 
-    // =============================
+    // ========================================
     // 緑丸
+    //
+    // 今日の累計売上
     // 1,000円 = 1個
     // 最大10個
-    // =============================
+    // ========================================
 
-    const circles = "🟢".repeat(
+    const circleCount =
       Math.min(
         10,
-        Math.floor(inputSales / 1000)
-      )
+        Math.floor(
+          todaySales / 1000
+        )
+      );
+
+    const circles =
+      "🟢".repeat(
+        circleCount
+      );
+
+    // ========================================
+    // 表示
+    // ========================================
+
+    const messageLines = [];
+
+    if (command === "cancel") {
+      messageLines.push(
+        "↩️ 売上を訂正しました"
+      );
+
+      messageLines.push("");
+    }
+
+    messageLines.push(
+      "🏍️ 配達売上"
     );
 
-    // =============================
-    // 表示
-    // =============================
+    messageLines.push(
+      "💰 今日の売上 " +
+      todaySales.toLocaleString() +
+      "円"
+    );
 
-    const prefix =
-      command === "cancel"
-        ? "↩️ 売上を訂正しました\n\n"
-        : "";
+    messageLines.push(
+      "📦 今日の件数 " +
+      todayOrders +
+      "件"
+    );
+
+    messageLines.push(
+      "💵 1件あたり " +
+      perOrder.toLocaleString() +
+      "円"
+    );
+
+    if (circles) {
+      messageLines.push(
+        circles
+      );
+    }
+
+    messageLines.push(
+      "📅 今月売上 " +
+      safeMonthlySales.toLocaleString() +
+      "円"
+    );
+
+    messageLines.push(
+      "📦 今月件数 " +
+      safeMonthlyOrders.toLocaleString() +
+      "件"
+    );
+
+    messageLines.push(
+      "🗓️ 年間売上 " +
+      safeYearlySales.toLocaleString() +
+      "円"
+    );
+
+    messageLines.push(
+      "📦 年間件数 " +
+      safeYearlyOrders.toLocaleString() +
+      "件"
+    );
+
+    messageLines.push(
+      "📈 平均売上／日 " +
+      averageSalesPerDay.toLocaleString() +
+      "円"
+    );
+
+    messageLines.push(
+      "🎯 月間目標 " +
+      targetSales.toLocaleString() +
+      "円"
+    );
+
+    messageLines.push(
+      "📊 目標達成率 " +
+      achievementRate +
+      "%"
+    );
+
+    messageLines.push(
+      "🏆 月間最高売上 " +
+      maxDailySales.toLocaleString() +
+      "円"
+    );
+
+    messageLines.push(
+      "🏆 月間最高件数 " +
+      maxDailyOrders +
+      "件"
+    );
+
+    messageLines.push(
+      "📆 稼働日数 " +
+      workingDays +
+      "日"
+    );
+
+    messageLines.push(
+      "🛵 累計配達件数 " +
+      totalOrders.toLocaleString() +
+      "件"
+    );
+
+    messageLines.push(
+      "🕐 " +
+      displayDate
+    );
+
+    messageLines.push(
+      "🛵 今日も配達お疲れ様でした！"
+    );
 
     const messageText =
-      prefix +
-      [
-        "🏍️ 配達売上",
-        "💰 今日の売上 " +
-          Number(todaySales).toLocaleString() +
-          "円",
-        "📦 今日の件数 " +
-          Number(todayOrders) +
-          "件",
-        "💵 1件あたり " +
-          perOrder.toLocaleString() +
-          "円",
-        circles,
-        "📅 今月売上 " +
-          Number(monthlySales).toLocaleString() +
-          "円",
-        "📦 今月件数 " +
-          Number(monthlyOrders).toLocaleString() +
-          "件",
-        "🗓️ 年間売上 " +
-          Number(yearlySales).toLocaleString() +
-          "円",
-        "📦 年間件数 " +
-          Number(yearlyOrders).toLocaleString() +
-          "件",
-        "📈 平均売上／日 " +
-          averageSalesPerDay.toLocaleString() +
-          "円",
-        "🎯 月間目標 " +
-          targetSales.toLocaleString() +
-          "円",
-        "📊 目標達成率 " +
-          achievementRate +
-          "%",
-        "🏆 月間最高売上 " +
-          maxDailySales.toLocaleString() +
-          "円",
-        "🏆 月間最高件数 " +
-          maxDailyOrders +
-          "件",
-        "📆 稼働日数 " +
-          workingDays +
-          "日",
-        "🛵 累計配達件数 " +
-          Number(totalOrders).toLocaleString() +
-          "件",
-        "🕐 " + displayDate,
-        "🛵 今日も配達お疲れ様でした！"
-      ].join("\n");
+      messageLines.join("\n");
 
-    console.log("SENDING:", messageText);
+    console.log(
+      "SENDING:",
+      messageText
+    );
 
-    // =============================
+    // ========================================
     // 画像
-    // =============================
+    // ========================================
 
     const imageUrl =
       "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/main/2B9038BB-2F1D-4FA2-B3D3-8FC3D76DCA87.png";
 
-    // =============================
+    // ========================================
     // Telegram送信
-    // =============================
+    // ========================================
 
     const telegramUrl =
       "https://api.telegram.org/bot" +
       token +
       "/sendPhoto";
 
-    const response = await fetch(
-      telegramUrl,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          chat_id: chatId,
-          photo: imageUrl,
-          caption: messageText
-        })
-      }
-    );
+    const response =
+      await fetch(
+        telegramUrl,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json"
+          },
+          body: JSON.stringify({
+            chat_id: chatId,
+            photo: imageUrl,
+            caption: messageText
+          })
+        }
+      );
 
-    const result = await response.text();
+    const result =
+      await response.text();
 
     console.log(
       "TELEGRAM RESULT:",
       result
     );
 
-    return res.status(200).send("OK");
+    return res
+      .status(200)
+      .send("OK");
 
   } catch (error) {
-    console.error("ERROR:", error);
+    console.error(
+      "ERROR:",
+      error
+    );
 
-    return res.status(200).send("OK");
+    return res
+      .status(200)
+      .send("OK");
   }
 };
