@@ -6,22 +6,25 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    // =========================
-    // Telegram Bot Token
-    // =========================
-
     const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
+    const redisUrl = process.env.UPSTASH_REDIS_REST_URL?.trim();
+    const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
 
     console.log("TOKEN EXISTS:", !!token);
-    console.log("TOKEN LENGTH:", token ? token.length : 0);
+    console.log("REDIS EXISTS:", !!redisUrl && !!redisToken);
 
     if (!token) {
       console.error("TELEGRAM_BOT_TOKEN is missing");
       return res.status(500).send("TOKEN MISSING");
     }
 
+    if (!redisUrl || !redisToken) {
+      console.error("REDIS ENV is missing");
+      return res.status(500).send("REDIS MISSING");
+    }
+
     // =========================
-    // Telegram Webhook受信
+    // リクエスト取得
     // =========================
 
     let rawBody = "";
@@ -33,7 +36,6 @@ module.exports = async function handler(req, res) {
     console.log("RAW BODY:", rawBody);
 
     if (!rawBody) {
-      console.log("EMPTY BODY");
       return res.status(200).send("OK");
     }
 
@@ -53,9 +55,7 @@ module.exports = async function handler(req, res) {
     console.log("TEXT:", text);
 
     // =========================
-    // /sales 売上 件数
-    // 例：
-    // /sales 5000 12
+    // /sales コマンド
     // =========================
 
     const match = text.match(
@@ -71,113 +71,175 @@ module.exports = async function handler(req, res) {
     const orders = Number(match[2]);
 
     // =========================
-    // 緑ゲージ
-    // 500円ごとに🟢
-    // =========================
-
-    const circles = "🟢".repeat(
-      Math.floor(sales / 500)
-    );
-
-    // =========================
     // 日本時間
     // =========================
 
     const now = new Date();
 
-    const date = new Intl.DateTimeFormat("ja-JP", {
+    const parts = new Intl.DateTimeFormat("ja-JP", {
       timeZone: "Asia/Tokyo",
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit"
-    }).format(now);
+    }).formatToParts(now);
+
+    const getPart = (type) =>
+      parts.find((p) => p.type === type)?.value;
+
+    const year = getPart("year");
+    const month = getPart("month");
+    const day = getPart("day");
+    const hour = getPart("hour");
+    const minute = getPart("minute");
+
+    const yearMonth = `${year}-${month}`;
+    const yearKey = year;
+
+    const displayDate =
+      `${year}/${month}/${day} ${hour}:${minute}`;
+
+    console.log("YEAR:", year);
+    console.log("MONTH:", month);
+    console.log("YEAR_MONTH:", yearMonth);
 
     // =========================
-    // 1件あたり
+    // Redis
     // =========================
+
+    async function redisCommand(command) {
+      const response = await fetch(redisUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${redisToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(command)
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || result.error) {
+        console.error("REDIS ERROR:", result);
+        throw new Error("Redis command failed");
+      }
+
+      return result.result;
+    }
+
+    // =========================
+    // 今月累計を加算
+    // =========================
+
+    const monthlyKey =
+      `delivery:stats:${yearMonth}`;
+
+    const yearlyKey =
+      `delivery:stats:${yearKey}`;
+
+    const monthlySales = await redisCommand([
+      "HINCRBY",
+      monthlyKey,
+      "sales",
+      sales
+    ]);
+
+    const monthlyOrders = await redisCommand([
+      "HINCRBY",
+      monthlyKey,
+      "orders",
+      orders
+    ]);
+
+    // =========================
+    // 年間累計を加算
+    // =========================
+
+    const yearlySales = await redisCommand([
+      "HINCRBY",
+      yearlyKey,
+      "sales",
+      sales
+    ]);
+
+    const yearlyOrders = await redisCommand([
+      "HINCRBY",
+      yearlyKey,
+      "orders",
+      orders
+    ]);
+
+    console.log("MONTHLY SALES:", monthlySales);
+    console.log("MONTHLY ORDERS:", monthlyOrders);
+    console.log("YEARLY SALES:", yearlySales);
+    console.log("YEARLY ORDERS:", yearlyOrders);
+
+    // =========================
+    // 表示用
+    // =========================
+
+    const circles = "🟢".repeat(
+      Math.floor(sales / 500)
+    );
 
     const perOrder =
       orders > 0
         ? Math.round(sales / orders)
         : 0;
 
-    // =========================
-    // 今月累計
-    //
-    // 現在は今回の売上を表示。
-    // 保存機能を追加すると
-    // 月ごとの自動累計になります。
-    // =========================
-
-    const monthlySales = sales;
-    const monthlyOrders = orders;
-
-    // =========================
-    // 売上メッセージ
-    // =========================
-
     const messageText = [
       "🏍️ 配達売上レポート",
       "💰 " + sales.toLocaleString() + "円",
       circles,
       "📦 " + orders + "件",
-      "💵 1件あたり " + perOrder.toLocaleString() + "円",
-      "📅 今月累計 " + monthlySales.toLocaleString() + "円",
-      "📦 今月累計 " + monthlyOrders + "件",
-      "🕐 " + date,
+      "💵 1件あたり " +
+        perOrder.toLocaleString() +
+        "円",
+      "📅 今月累計 " +
+        Number(monthlySales).toLocaleString() +
+        "円",
+      "📦 今月累計 " +
+        Number(monthlyOrders).toLocaleString() +
+        "件",
+      "🗓️ 年間累計 " +
+        Number(yearlySales).toLocaleString() +
+        "円",
+      "📦 年間累計 " +
+        Number(yearlyOrders).toLocaleString() +
+        "件",
+      "🕐 " + displayDate,
       "🛵 今日も配達お疲れ様でした！"
     ].join("\n");
 
     console.log("SENDING:", messageText);
 
     // =========================
-    // Bot確認
-    // =========================
-
-    const getMeResponse = await fetch(
-      "https://api.telegram.org/bot" +
-        token +
-        "/getMe"
-    );
-
-    const getMeResult = await getMeResponse.text();
-
-    console.log("GETME RESULT:", getMeResult);
-
-    // =========================
-    // GitHub画像
+    // Telegram送信
     // =========================
 
     const imageUrl =
       "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/main/2B9038BB-2F1D-4FA2-B3D3-8FC3D76DCA87.png";
-
-    // =========================
-    // 画像＋メッセージ送信
-    // =========================
 
     const telegramUrl =
       "https://api.telegram.org/bot" +
       token +
       "/sendPhoto";
 
-    console.log(
-      "TELEGRAM URL:",
-      telegramUrl.replace(token, "[TOKEN]")
+    const response = await fetch(
+      telegramUrl,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          chat_id: chatId,
+          photo: imageUrl,
+          caption: messageText
+        })
+      }
     );
-
-    const response = await fetch(telegramUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        photo: imageUrl,
-        caption: messageText
-      })
-    });
 
     const result = await response.text();
 
