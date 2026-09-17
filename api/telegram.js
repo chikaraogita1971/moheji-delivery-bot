@@ -23,6 +23,10 @@ module.exports = async function handler(req, res) {
       return res.status(500).send("REDIS MISSING");
     }
 
+    // =============================
+    // Telegram受信
+    // =============================
+
     let rawBody = "";
 
     for await (const chunk of req) {
@@ -46,21 +50,39 @@ module.exports = async function handler(req, res) {
     console.log("CHAT_ID:", chatId);
     console.log("TEXT:", text);
 
+    // =============================
+    // コマンド解析
     // /sales 5000 12
+    // /cancel 5000 12
+    // =============================
+
     const match = text.match(
-      /^\/sales(?:@\S+)?\s+(\d+)\s+(\d+)$/
+      /^\/(sales|cancel)(?:@\S+)?\s+(\d+)\s+(\d+)$/
     );
 
     if (!match) {
+      console.log("NOT SALES/CANCEL COMMAND");
       return res.status(200).send("OK");
     }
 
-    const sales = Number(match[1]);
-    const orders = Number(match[2]);
+    const command = match[1];
+    const inputSales = Number(match[2]);
+    const inputOrders = Number(match[3]);
 
-    if (sales < 0 || orders < 0) {
+    if (inputSales < 0 || inputOrders < 0) {
       return res.status(200).send("OK");
     }
+
+    // /sales = 加算
+    // /cancel = 減算
+    const sign = command === "cancel" ? -1 : 1;
+
+    const sales = inputSales * sign;
+    const orders = inputOrders * sign;
+
+    console.log("COMMAND:", command);
+    console.log("SALES:", sales);
+    console.log("ORDERS:", orders);
 
     // =============================
     // 東京時間
@@ -201,74 +223,7 @@ module.exports = async function handler(req, res) {
       ]);
 
     // =============================
-    // 稼働日数
-    // 同じ日は1日としてカウント
-    // =============================
-
-    await redisCommand([
-      "SADD",
-      workingDaysKey,
-      dateKey
-    ]);
-
-    const workingDays =
-      await redisCommand([
-        "SCARD",
-        workingDaysKey
-      ]);
-
-    // =============================
-    // 月間最高売上
-    // =============================
-
-    const currentMaxSales =
-      await redisCommand([
-        "HGET",
-        monthlyKey,
-        "maxDailySales"
-      ]);
-
-    let maxDailySales =
-      Number(currentMaxSales || 0);
-
-    if (Number(todaySales) > maxDailySales) {
-      maxDailySales = Number(todaySales);
-
-      await redisCommand([
-        "HSET",
-        monthlyKey,
-        "maxDailySales",
-        maxDailySales
-      ]);
-    }
-
-    // =============================
-    // 月間最高件数
-    // =============================
-
-    const currentMaxOrders =
-      await redisCommand([
-        "HGET",
-        monthlyKey,
-        "maxDailyOrders"
-      ]);
-
-    let maxDailyOrders =
-      Number(currentMaxOrders || 0);
-
-    if (Number(todayOrders) > maxDailyOrders) {
-      maxDailyOrders = Number(todayOrders);
-
-      await redisCommand([
-        "HSET",
-        monthlyKey,
-        "maxDailyOrders",
-        maxDailyOrders
-      ]);
-    }
-
-    // =============================
-    // 全期間の累計配達件数
+    // 累計配達件数
     // =============================
 
     const totalOrders =
@@ -278,6 +233,82 @@ module.exports = async function handler(req, res) {
         "orders",
         orders
       ]);
+
+    // =============================
+    // 稼働日判定
+    // =============================
+
+    let workingDays = 0;
+
+    if (Number(todaySales) !== 0 || Number(todayOrders) !== 0) {
+      await redisCommand([
+        "SADD",
+        workingDaysKey,
+        dateKey
+      ]);
+    } else {
+      await redisCommand([
+        "SREM",
+        workingDaysKey,
+        dateKey
+      ]);
+    }
+
+    workingDays =
+      await redisCommand([
+        "SCARD",
+        workingDaysKey
+      ]);
+
+    // =============================
+    // 月間最高売上を取得
+    // =============================
+
+    const maxSalesKey =
+      `moheji:delivery:maxsales:${yearMonth}`;
+
+    const maxOrdersKey =
+      `moheji:delivery:maxorders:${yearMonth}`;
+
+    let maxDailySales =
+      Number(
+        await redisCommand([
+          "GET",
+          maxSalesKey
+        ]) || 0
+      );
+
+    let maxDailyOrders =
+      Number(
+        await redisCommand([
+          "GET",
+          maxOrdersKey
+        ]) || 0
+      );
+
+    // =============================
+    // 最高値を更新
+    // =============================
+
+    if (Number(todaySales) > maxDailySales) {
+      maxDailySales = Number(todaySales);
+
+      await redisCommand([
+        "SET",
+        maxSalesKey,
+        maxDailySales
+      ]);
+    }
+
+    if (Number(todayOrders) > maxDailyOrders) {
+      maxDailyOrders = Number(todayOrders);
+
+      await redisCommand([
+        "SET",
+        maxOrdersKey,
+        maxDailyOrders
+      ]);
+    }
 
     // =============================
     // 平均売上／日
@@ -296,12 +327,12 @@ module.exports = async function handler(req, res) {
     // =============================
 
     const perOrder =
-      orders > 0
-        ? Math.round(sales / orders)
+      inputOrders > 0
+        ? Math.round(inputSales / inputOrders)
         : 0;
 
     // =============================
-    // 月間目標
+    // 月間目標 50万円
     // =============================
 
     const targetSales = 500000;
@@ -324,7 +355,7 @@ module.exports = async function handler(req, res) {
     const circles = "🟢".repeat(
       Math.min(
         10,
-        Math.floor(sales / 1000)
+        Math.floor(inputSales / 1000)
       )
     );
 
@@ -332,54 +363,61 @@ module.exports = async function handler(req, res) {
     // 表示
     // =============================
 
-    const messageText = [
-      "🏍️ 配達売上",
-      "💰 今日の売上 " +
-        sales.toLocaleString() +
-        "円",
-      "📦 今日の件数 " +
-        orders +
-        "件",
-      "💵 1件あたり " +
-        perOrder.toLocaleString() +
-        "円",
-      circles,
-      "📅 今月売上 " +
-        Number(monthlySales).toLocaleString() +
-        "円",
-      "📦 今月件数 " +
-        Number(monthlyOrders).toLocaleString() +
-        "件",
-      "🗓️ 年間売上 " +
-        Number(yearlySales).toLocaleString() +
-        "円",
-      "📦 年間件数 " +
-        Number(yearlyOrders).toLocaleString() +
-        "件",
-      "📈 平均売上／日 " +
-        averageSalesPerDay.toLocaleString() +
-        "円",
-      "🎯 月間目標 " +
-        targetSales.toLocaleString() +
-        "円",
-      "📊 目標達成率 " +
-        achievementRate +
-        "%",
-      "🏆 月間最高売上 " +
-        maxDailySales.toLocaleString() +
-        "円",
-      "🏆 月間最高件数 " +
-        maxDailyOrders +
-        "件",
-      "📆 稼働日数 " +
-        workingDays +
-        "日",
-      "🛵 累計配達件数 " +
-        Number(totalOrders).toLocaleString() +
-        "件",
-      "🕐 " + displayDate,
-      "🛵 今日も配達お疲れ様でした！"
-    ].join("\n");
+    const prefix =
+      command === "cancel"
+        ? "↩️ 売上を訂正しました\n\n"
+        : "";
+
+    const messageText =
+      prefix +
+      [
+        "🏍️ 配達売上",
+        "💰 今日の売上 " +
+          Number(todaySales).toLocaleString() +
+          "円",
+        "📦 今日の件数 " +
+          Number(todayOrders) +
+          "件",
+        "💵 1件あたり " +
+          perOrder.toLocaleString() +
+          "円",
+        circles,
+        "📅 今月売上 " +
+          Number(monthlySales).toLocaleString() +
+          "円",
+        "📦 今月件数 " +
+          Number(monthlyOrders).toLocaleString() +
+          "件",
+        "🗓️ 年間売上 " +
+          Number(yearlySales).toLocaleString() +
+          "円",
+        "📦 年間件数 " +
+          Number(yearlyOrders).toLocaleString() +
+          "件",
+        "📈 平均売上／日 " +
+          averageSalesPerDay.toLocaleString() +
+          "円",
+        "🎯 月間目標 " +
+          targetSales.toLocaleString() +
+          "円",
+        "📊 目標達成率 " +
+          achievementRate +
+          "%",
+        "🏆 月間最高売上 " +
+          maxDailySales.toLocaleString() +
+          "円",
+        "🏆 月間最高件数 " +
+          maxDailyOrders +
+          "件",
+        "📆 稼働日数 " +
+          workingDays +
+          "日",
+        "🛵 累計配達件数 " +
+          Number(totalOrders).toLocaleString() +
+          "件",
+        "🕐 " + displayDate,
+        "🛵 今日も配達お疲れ様でした！"
+      ].join("\n");
 
     console.log("SENDING:", messageText);
 
@@ -416,7 +454,10 @@ module.exports = async function handler(req, res) {
 
     const result = await response.text();
 
-    console.log("TELEGRAM RESULT:", result);
+    console.log(
+      "TELEGRAM RESULT:",
+      result
+    );
 
     return res.status(200).send("OK");
 
