@@ -978,43 +978,40 @@ module.exports = async function handler(req, res) {
         circleCount
       );
 
-    // =========================
-    // レポート
-    // =========================
-    const reportLines = [
-      "🏍️ 配達売上",
-      "",
-      `💰 今日の売上 ${newDailySales.toLocaleString()}円`,
-    ];
+// =========================
+// レポート
+// =========================
+const reportLines = [
+  "🏍️ 配達売上",
+  `💰 今日の売上 ${newDailySales.toLocaleString()}円`,
+];
 
-    if (circles) {
-      reportLines.push(
-        circles
-      );
-    }
+if (circles) {
+  reportLines.push(
+    circles
+  );
+}
 
-    reportLines.push(
-      `📦 今日の件数 ${newDailyOrders.toLocaleString()}件`,
-      `💵 1件あたり ${perOrder.toLocaleString()}円`,
-      `📅 今月売上 ${newMonthlySales.toLocaleString()}円`,
-      `📦 今月件数 ${newMonthlyOrders.toLocaleString()}件`,
-      `🗓️ 年間売上 ${newYearlySales.toLocaleString()}円`,
-      `📦 年間件数 ${newYearlyOrders.toLocaleString()}件`,
-      `📈 平均売上／日 ${averageSalesPerDay.toLocaleString()}円`,
-      `🎯 月間目標 ${monthlyTarget.toLocaleString()}円`,
-      `📊 目標達成率 ${achievementRate}%`,
-      `🏆 月間最高売上 ${maxDailySales.toLocaleString()}円`,
-      `🏆 月間最高件数 ${maxDailyOrders.toLocaleString()}件`,
-      `📆 稼働日数 ${workingDayCount}日`,
-      `🛵 累計配達件数 ${newAllTimeOrders.toLocaleString()}件`,
-      "",
-      `🕐 ${displayDate}`,
-      "",
-      "🛵 今日も配達お疲れ様でした！"
-    );
+reportLines.push(
+  `📦 今日の件数 ${newDailyOrders.toLocaleString()}件`,
+  `💵 1件あたり ${perOrder.toLocaleString()}円`,
+  `📅 今月売上 ${newMonthlySales.toLocaleString()}円`,
+  `📦 今月件数 ${newMonthlyOrders.toLocaleString()}件`,
+  `🗓️ 年間売上 ${newYearlySales.toLocaleString()}円`,
+  `📦 年間件数 ${newYearlyOrders.toLocaleString()}件`,
+  `📈 平均売上／日 ${averageSalesPerDay.toLocaleString()}円`,
+  `🎯 月間目標 ${monthlyTarget.toLocaleString()}円`,
+  `📊 目標達成率 ${achievementRate}%`,
+  `🏆 月間最高売上 ${maxDailySales.toLocaleString()}円`,
+  `🏆 月間最高件数 ${maxDailyOrders.toLocaleString()}件`,
+  `📆 稼働日数 ${workingDayCount}日`,
+  `🛵 累計配達件数 ${newAllTimeOrders.toLocaleString()}件`,
+  `🕐 ${displayDate}`,
+  "🛵 今日も配達お疲れ様でした！"
+);
 
-    const report =
-      reportLines.join("\n");
+const report =
+  reportLines.join("\n");
 
     // =========================
     // 画像付き送信
