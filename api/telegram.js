@@ -13,7 +13,7 @@ export default async function handler(req, res) {
   const text = message.text || "";
   const chatId = message.chat.id;
 
-  const match = text.match(/^\/sales\s+(\d+)\s+(\d+)$/);
+  const match = text.match(/^\/sales(?:@\w+)?\s+(\d+)\s+(\d+)$/);
 
   if (!match) {
     return res.status(200).send("OK");
