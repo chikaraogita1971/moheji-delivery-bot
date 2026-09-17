@@ -8,32 +8,37 @@ module.exports = async function handler(req, res) {
   try {
     const token = process.env.TELEGRAM_BOT_TOKEN;
 
-    let body = req.body;
-
-    // req.body がない場合は raw body を読む
-    if (!body) {
-      let rawBody = "";
-
-      for await (const chunk of req) {
-        rawBody += chunk;
-      }
-
-      console.log("RAW BODY:", rawBody);
-
-      if (rawBody) {
-        body = JSON.parse(rawBody);
-      }
+    if (!token) {
+      console.error("TELEGRAM_BOT_TOKEN is missing");
+      return res.status(500).send("TOKEN MISSING");
     }
 
-    console.log("BODY:", JSON.stringify(body));
+    // Telegramから送られてきたbodyを直接読む
+    let rawBody = "";
 
-    if (!token || !body || !body.message) {
-      console.log("TOKEN OR MESSAGE MISSING");
+    for await (const chunk of req) {
+      rawBody += chunk.toString();
+    }
+
+    console.log("RAW BODY:", rawBody);
+
+    if (!rawBody) {
+      console.log("EMPTY BODY");
+      return res.status(200).send("OK");
+    }
+
+    const body = JSON.parse(rawBody);
+
+    console.log("PARSED BODY:", JSON.stringify(body));
+
+    if (!body.message) {
+      console.log("MESSAGE MISSING");
       return res.status(200).send("OK");
     }
 
     const message = body.message;
-    const chatId = message.chat && message.chat.id;
+
+    const chatId = message.chat?.id;
     const text = message.text || "";
 
     console.log("CHAT_ID:", chatId);
@@ -41,7 +46,9 @@ module.exports = async function handler(req, res) {
 
     // /sales 5000 12
     // /sales@BotName 5000 12
-    const match = text.match(/^\/sales(?:@\S+)?\s+(\d+)\s+(\d+)$/);
+    const match = text.match(
+      /^\/sales(?:@\S+)?\s+(\d+)\s+(\d+)$/
+    );
 
     if (!match) {
       console.log("NOT SALES COMMAND");
@@ -51,7 +58,9 @@ module.exports = async function handler(req, res) {
     const sales = Number(match[1]);
     const orders = Number(match[2]);
 
-    const circles = "●".repeat(Math.floor(sales / 500));
+    const circles = "●".repeat(
+      Math.floor(sales / 500)
+    );
 
     const now = new Date();
 
@@ -78,7 +87,9 @@ module.exports = async function handler(req, res) {
     console.log("SENDING:", messageText);
 
     const response = await fetch(
-      "https://api.telegram.org/bot" + token + "/sendMessage",
+      "https://api.telegram.org/bot" +
+        token +
+        "/sendMessage",
       {
         method: "POST",
         headers: {
@@ -99,6 +110,7 @@ module.exports = async function handler(req, res) {
 
   } catch (error) {
     console.error("ERROR:", error);
+
     return res.status(200).send("OK");
   }
 };
