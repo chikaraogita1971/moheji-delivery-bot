@@ -6,9 +6,9 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
+    // Vercelの環境変数
+    const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
 
-    // Token確認（実際のTokenは表示しない）
     console.log("TOKEN EXISTS:", !!token);
     console.log("TOKEN LENGTH:", token ? token.length : 0);
     console.log(
@@ -21,7 +21,7 @@ module.exports = async function handler(req, res) {
       return res.status(500).send("TOKEN MISSING");
     }
 
-    // Telegramから送られてきたbodyを直接読む
+    // Telegramから届いたデータを取得
     let rawBody = "";
 
     for await (const chunk of req) {
@@ -53,7 +53,6 @@ module.exports = async function handler(req, res) {
     console.log("TEXT:", text);
 
     // /sales 5000 12
-    // /sales@MohejiDelivery_bot 5000 12
     const match = text.match(
       /^\/sales(?:@\S+)?\s+(\d+)\s+(\d+)$/
     );
@@ -66,35 +65,48 @@ module.exports = async function handler(req, res) {
     const sales = Number(match[1]);
     const orders = Number(match[2]);
 
-    const circles = "●".repeat(
+    // 500円ごとに緑の丸
+    const circles = "🟢".repeat(
       Math.floor(sales / 500)
     );
 
+    // 日本時間
     const now = new Date();
 
     const date = new Intl.DateTimeFormat("ja-JP", {
       timeZone: "Asia/Tokyo",
       year: "numeric",
-      month: "numeric",
-      day: "numeric",
+      month: "2-digit",
+      day: "2-digit",
       hour: "2-digit",
       minute: "2-digit"
     }).format(now);
 
+    // 1件あたり単価
+    const perOrder =
+      orders > 0
+        ? Math.round(sales / orders)
+        : 0;
+
+    // 売上レポート
     const messageText = [
-      "配達売上！",
+      "🏍️ 配達売上レポート",
       "",
-      sales.toLocaleString() + "円",
+      "💰 " + sales.toLocaleString() + "円",
+      "📦 " + orders + "件",
+      "",
+      "💵 1件あたり " + perOrder.toLocaleString() + "円",
+      "",
       circles,
-      orders + "件",
-      date,
       "",
-      "お疲れ様でした。"
+      "🕐 " + date,
+      "",
+      "🏍️ 今日も配達お疲れ様でした！"
     ].join("\n");
 
     console.log("SENDING:", messageText);
 
-    // Tokenが実際にTelegramで有効か確認
+    // Telegram Botの確認
     const getMeResponse = await fetch(
       "https://api.telegram.org/bot" +
         token +
@@ -105,11 +117,15 @@ module.exports = async function handler(req, res) {
 
     console.log("GETME RESULT:", getMeResult);
 
-    // Telegramへ送信
+    // GitHubに保存した画像
+    const imageUrl =
+      "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/main/2B9038BB-2F1D-4FA2-B3D3-8FC3D76DCA87.png";
+
+    // 画像＋売上レポートを送信
     const telegramUrl =
       "https://api.telegram.org/bot" +
       token +
-      "/sendMessage";
+      "/sendPhoto";
 
     console.log(
       "TELEGRAM URL:",
@@ -123,7 +139,8 @@ module.exports = async function handler(req, res) {
       },
       body: JSON.stringify({
         chat_id: chatId,
-        text: messageText
+        photo: imageUrl,
+        caption: messageText
       })
     });
 
