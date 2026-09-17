@@ -18,7 +18,7 @@ module.exports = async function handler(req, res) {
   }
 
   // =========================
-  // Redis helper
+  // Redis
   // =========================
   async function redisCommand(command) {
     const response = await fetch(KV_REST_API_URL, {
@@ -39,9 +39,63 @@ module.exports = async function handler(req, res) {
     return data.result;
   }
 
+  // =========================
+  // Telegram message
+  // =========================
+  async function sendTelegramMessage(chatId, message) {
+    const url =
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: message,
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(
+        `Telegram sendMessage error: ${response.status} ${text}`
+      );
+    }
+  }
+
+  // =========================
+  // Telegram photo
+  // =========================
+  async function sendTelegramPhoto(chatId, caption) {
+    const url =
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        photo:
+          "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/main/moheji.png",
+        caption,
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(
+        `Telegram sendPhoto error: ${response.status} ${text}`
+      );
+    }
+  }
+
   try {
     // =========================
-    // Read Telegram update
+    // Telegram update
     // =========================
     const rawBody =
       typeof req.body === "string"
@@ -51,9 +105,7 @@ module.exports = async function handler(req, res) {
     const body = JSON.parse(rawBody);
 
     // =========================
-    // Telegram duplicate update protection
-    // 同じ update_id が再送されても
-    // 2重集計・2重返信しない
+    // 二重処理防止
     // =========================
     const updateId = body.update_id;
 
@@ -61,7 +113,7 @@ module.exports = async function handler(req, res) {
       const processedKey =
         `moheji:telegram:processed:${updateId}`;
 
-      const alreadyProcessed = await redisCommand([
+      const result = await redisCommand([
         "SET",
         processedKey,
         "1",
@@ -70,9 +122,9 @@ module.exports = async function handler(req, res) {
         "86400",
       ]);
 
-      if (alreadyProcessed !== "OK") {
+      if (result !== "OK") {
         console.log(
-          `Duplicate Telegram update ignored: ${updateId}`
+          `Duplicate update ignored: ${updateId}`
         );
 
         return res.status(200).send("OK");
@@ -95,7 +147,7 @@ module.exports = async function handler(req, res) {
     }
 
     // =========================
-    // Tokyo date/time
+    // Tokyo time
     // =========================
     const now = new Date();
 
@@ -118,9 +170,14 @@ module.exports = async function handler(req, res) {
     const hour = getPart("hour");
     const minute = getPart("minute");
 
-    const dateKey = `${year}-${month}-${day}`;
-    const monthKey = `${year}-${month}`;
-    const yearKey = `${year}`;
+    const dateKey =
+      `${year}-${month}-${day}`;
+
+    const monthKey =
+      `${year}-${month}`;
+
+    const yearKey =
+      `${year}`;
 
     const displayDate =
       `${year}/${month}/${day} ${hour}:${minute}`;
@@ -156,9 +213,9 @@ module.exports = async function handler(req, res) {
       let currentYear = Number(year);
       let currentMonth = Number(month);
 
-      // 今月を含めて24か月
       for (let i = 0; i < 24; i++) {
-        const mm = String(currentMonth).padStart(2, "0");
+        const mm =
+          String(currentMonth).padStart(2, "0");
 
         monthKeys.push(
           `${currentYear}-${mm}`
@@ -175,8 +232,10 @@ module.exports = async function handler(req, res) {
       const records = [];
 
       for (const ym of monthKeys) {
-        const [recordYear, recordMonth] =
-          ym.split("-");
+        const [
+          recordYear,
+          recordMonth,
+        ] = ym.split("-");
 
         const recordMonthlyKey =
           `moheji:delivery:month:${ym}`;
@@ -210,7 +269,6 @@ module.exports = async function handler(req, res) {
             Number(monthlyOrdersRaw || 0)
           );
 
-        // データがない月は表示しない
         if (
           monthlySales === 0 &&
           monthlyOrders === 0
@@ -218,7 +276,6 @@ module.exports = async function handler(req, res) {
           continue;
         }
 
-        // 稼働日の一覧
         const workingDays =
           await redisCommand([
             "SMEMBERS",
@@ -229,8 +286,7 @@ module.exports = async function handler(req, res) {
         let maxDailyOrders = 0;
 
         if (
-          Array.isArray(workingDays) &&
-          workingDays.length > 0
+          Array.isArray(workingDays)
         ) {
           for (const workingDate of workingDays) {
             const recordDailyKey =
@@ -262,12 +318,20 @@ module.exports = async function handler(req, res) {
                 Number(dailyOrdersRaw || 0)
               );
 
-            if (dailySales > maxDailySales) {
-              maxDailySales = dailySales;
+            if (
+              dailySales >
+              maxDailySales
+            ) {
+              maxDailySales =
+                dailySales;
             }
 
-            if (dailyOrders > maxDailyOrders) {
-              maxDailyOrders = dailyOrders;
+            if (
+              dailyOrders >
+              maxDailyOrders
+            ) {
+              maxDailyOrders =
+                dailyOrders;
             }
           }
         }
@@ -286,7 +350,7 @@ module.exports = async function handler(req, res) {
 
       if (records.length === 0) {
         recordMessage +=
-          `まだ月間記録がありません。`;
+          "まだ月間記録がありません。";
       } else {
         recordMessage +=
           records.join("\n\n");
@@ -306,11 +370,9 @@ module.exports = async function handler(req, res) {
     // =========================
     // /sales /cancel
     // =========================
-    let command = "";
-    let sales = 0;
-    let orders = 0;
-
     const parts = text.split(/\s+/);
+
+    let command = "";
 
     if (
       parts[0] === "/sales" ||
@@ -337,8 +399,8 @@ module.exports = async function handler(req, res) {
       return res.status(200).send("OK");
     }
 
-    sales = Number(parts[1]);
-    orders = Number(parts[2]);
+    let sales = Number(parts[1]);
+    let orders = Number(parts[2]);
 
     if (
       !Number.isFinite(sales) ||
@@ -358,7 +420,7 @@ module.exports = async function handler(req, res) {
     orders = Math.floor(orders);
 
     // =========================
-    // 現在値を取得
+    // 今日
     // =========================
     const currentDailySalesRaw =
       await redisCommand([
@@ -386,9 +448,6 @@ module.exports = async function handler(req, res) {
         Number(currentDailyOrdersRaw || 0)
       );
 
-    // =========================
-    // 新しい今日の値
-    // =========================
     let newDailySales;
     let newDailyOrders;
 
@@ -412,9 +471,6 @@ module.exports = async function handler(req, res) {
         );
     }
 
-    // =========================
-    // 今日のデータ保存
-    // =========================
     await redisCommand([
       "HSET",
       dailyKey,
@@ -425,7 +481,7 @@ module.exports = async function handler(req, res) {
     ]);
 
     // =========================
-    // 月間値
+    // 今月
     // =========================
     const currentMonthlySalesRaw =
       await redisCommand([
@@ -486,7 +542,7 @@ module.exports = async function handler(req, res) {
     ]);
 
     // =========================
-    // 年間値
+    // 年間
     // =========================
     const currentYearlySalesRaw =
       await redisCommand([
@@ -584,8 +640,6 @@ module.exports = async function handler(req, res) {
 
     // =========================
     // 稼働日
-    // 今日の売上または件数があれば稼働日
-    // 両方0なら稼働日から削除
     // =========================
     if (
       newDailySales > 0 ||
@@ -620,14 +674,12 @@ module.exports = async function handler(req, res) {
 
     // =========================
     // 月間最高売上・最高件数
-    // 稼働日の全日を確認
     // =========================
     let maxDailySales = 0;
     let maxDailyOrders = 0;
 
     if (
-      Array.isArray(workingDays) &&
-      workingDays.length > 0
+      Array.isArray(workingDays)
     ) {
       for (const workingDate of workingDays) {
         const checkDailyKey =
@@ -659,12 +711,20 @@ module.exports = async function handler(req, res) {
             Number(checkOrdersRaw || 0)
           );
 
-        if (checkSales > maxDailySales) {
-          maxDailySales = checkSales;
+        if (
+          checkSales >
+          maxDailySales
+        ) {
+          maxDailySales =
+            checkSales;
         }
 
-        if (checkOrders > maxDailyOrders) {
-          maxDailyOrders = checkOrders;
+        if (
+          checkOrders >
+          maxDailyOrders
+        ) {
+          maxDailyOrders =
+            checkOrders;
         }
       }
     }
@@ -675,7 +735,8 @@ module.exports = async function handler(req, res) {
     const perOrder =
       newDailyOrders > 0
         ? Math.round(
-            newDailySales / newDailyOrders
+            newDailySales /
+              newDailyOrders
           )
         : 0;
 
@@ -709,7 +770,6 @@ module.exports = async function handler(req, res) {
 
     // =========================
     // 緑丸
-    // 今日の累計売上を基準
     // 1000円 = 1個
     // 最大10個
     // =========================
@@ -733,7 +793,6 @@ module.exports = async function handler(req, res) {
       `💰 今日の売上 ${newDailySales.toLocaleString()}円`,
     ];
 
-    // 緑丸は今日の売上の直下
     if (circles) {
       reportLines.push(circles);
     }
@@ -762,7 +821,7 @@ module.exports = async function handler(req, res) {
       reportLines.join("\n");
 
     // =========================
-    // Telegramへ画像付き送信
+    // 画像付き送信
     // =========================
     await sendTelegramPhoto(
       chatId,
@@ -777,75 +836,8 @@ module.exports = async function handler(req, res) {
       error
     );
 
-    return res.status(500).send("Internal Server Error");
-  }
-
-  // =========================
-  // Telegram text message
-  // =========================
-  async function sendTelegramMessage(
-    chatId,
-    message
-  ) {
-    const url =
-      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type":
-          "application/json",
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: message,
-      }),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-
-      throw new Error(
-        `Telegram sendMessage error: ${response.status} ${text}`
-      );
-    }
-  }
-
-  // =========================
-  // Telegram photo
-  // =========================
-  async function sendTelegramPhoto(
-    chatId,
-    caption
-  ) {
-    const url =
-      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`;
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type":
-          "application/json",
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        photo:
-          "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/main/moheji.png",
-        caption,
-      }),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-
-      throw new Error(
-        `Telegram sendPhoto error: ${response.status} ${text}`
-      );
-    }
-  }
-};
-    return res
-      .status(200)
-      .send("OK");
+    return res.status(500).send(
+      "Internal Server Error"
+    );
   }
 };
