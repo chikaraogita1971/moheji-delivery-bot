@@ -8,6 +8,14 @@ module.exports = async function handler(req, res) {
   try {
     const token = process.env.TELEGRAM_BOT_TOKEN;
 
+    // Token確認（実際のTokenは表示しない）
+    console.log("TOKEN EXISTS:", !!token);
+    console.log("TOKEN LENGTH:", token ? token.length : 0);
+    console.log(
+      "TOKEN PREFIX:",
+      token ? token.substring(0, 10) : "NONE"
+    );
+
     if (!token) {
       console.error("TELEGRAM_BOT_TOKEN is missing");
       return res.status(500).send("TOKEN MISSING");
@@ -45,7 +53,7 @@ module.exports = async function handler(req, res) {
     console.log("TEXT:", text);
 
     // /sales 5000 12
-    // /sales@BotName 5000 12
+    // /sales@MohejiDelivery_bot 5000 12
     const match = text.match(
       /^\/sales(?:@\S+)?\s+(\d+)\s+(\d+)$/
     );
@@ -86,21 +94,38 @@ module.exports = async function handler(req, res) {
 
     console.log("SENDING:", messageText);
 
-    const response = await fetch(
+    // Tokenが実際にTelegramで有効か確認
+    const getMeResponse = await fetch(
       "https://api.telegram.org/bot" +
         token +
-        "/sendMessage",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: messageText
-        })
-      }
+        "/getMe"
     );
+
+    const getMeResult = await getMeResponse.text();
+
+    console.log("GETME RESULT:", getMeResult);
+
+    // Telegramへ送信
+    const telegramUrl =
+      "https://api.telegram.org/bot" +
+      token +
+      "/sendMessage";
+
+    console.log(
+      "TELEGRAM URL:",
+      telegramUrl.replace(token, "[TOKEN]")
+    );
+
+    const response = await fetch(telegramUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: messageText
+      })
+    });
 
     const result = await response.text();
 
