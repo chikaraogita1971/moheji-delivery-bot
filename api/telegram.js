@@ -6,22 +6,24 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    // Vercelの環境変数
+    // =========================
+    // Telegram Bot Token
+    // =========================
+
     const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
 
     console.log("TOKEN EXISTS:", !!token);
     console.log("TOKEN LENGTH:", token ? token.length : 0);
-    console.log(
-      "TOKEN PREFIX:",
-      token ? token.substring(0, 10) : "NONE"
-    );
 
     if (!token) {
       console.error("TELEGRAM_BOT_TOKEN is missing");
       return res.status(500).send("TOKEN MISSING");
     }
 
-    // Telegramから届いたデータを取得
+    // =========================
+    // Telegram Webhook受信
+    // =========================
+
     let rawBody = "";
 
     for await (const chunk of req) {
@@ -37,8 +39,6 @@ module.exports = async function handler(req, res) {
 
     const body = JSON.parse(rawBody);
 
-    console.log("PARSED BODY:", JSON.stringify(body));
-
     if (!body.message) {
       console.log("MESSAGE MISSING");
       return res.status(200).send("OK");
@@ -52,7 +52,12 @@ module.exports = async function handler(req, res) {
     console.log("CHAT_ID:", chatId);
     console.log("TEXT:", text);
 
+    // =========================
+    // /sales 売上 件数
+    // 例：
     // /sales 5000 12
+    // =========================
+
     const match = text.match(
       /^\/sales(?:@\S+)?\s+(\d+)\s+(\d+)$/
     );
@@ -65,12 +70,19 @@ module.exports = async function handler(req, res) {
     const sales = Number(match[1]);
     const orders = Number(match[2]);
 
-    // 500円ごとに緑の丸
+    // =========================
+    // 緑ゲージ
+    // 500円ごとに🟢
+    // =========================
+
     const circles = "🟢".repeat(
       Math.floor(sales / 500)
     );
 
+    // =========================
     // 日本時間
+    // =========================
+
     const now = new Date();
 
     const date = new Intl.DateTimeFormat("ja-JP", {
@@ -82,31 +94,48 @@ module.exports = async function handler(req, res) {
       minute: "2-digit"
     }).format(now);
 
-    // 1件あたり単価
+    // =========================
+    // 1件あたり
+    // =========================
+
     const perOrder =
       orders > 0
         ? Math.round(sales / orders)
         : 0;
 
-    // 売上レポート
+    // =========================
+    // 今月累計
+    //
+    // 現在は今回の売上を表示。
+    // 保存機能を追加すると
+    // 月ごとの自動累計になります。
+    // =========================
+
+    const monthlySales = sales;
+    const monthlyOrders = orders;
+
+    // =========================
+    // 売上メッセージ
+    // =========================
+
     const messageText = [
       "🏍️ 配達売上レポート",
-      "",
       "💰 " + sales.toLocaleString() + "円",
-      "📦 " + orders + "件",
-      "",
-      "💵 1件あたり " + perOrder.toLocaleString() + "円",
-      "",
       circles,
-      "",
+      "📦 " + orders + "件",
+      "💵 1件あたり " + perOrder.toLocaleString() + "円",
+      "📅 今月累計 " + monthlySales.toLocaleString() + "円",
+      "📦 今月累計 " + monthlyOrders + "件",
       "🕐 " + date,
-      "",
-      "🏍️ 今日も配達お疲れ様でした！"
+      "🛵 今日も配達お疲れ様でした！"
     ].join("\n");
 
     console.log("SENDING:", messageText);
 
-    // Telegram Botの確認
+    // =========================
+    // Bot確認
+    // =========================
+
     const getMeResponse = await fetch(
       "https://api.telegram.org/bot" +
         token +
@@ -117,11 +146,17 @@ module.exports = async function handler(req, res) {
 
     console.log("GETME RESULT:", getMeResult);
 
-    // GitHubに保存した画像
+    // =========================
+    // GitHub画像
+    // =========================
+
     const imageUrl =
       "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/main/2B9038BB-2F1D-4FA2-B3D3-8FC3D76DCA87.png";
 
-    // 画像＋売上レポートを送信
+    // =========================
+    // 画像＋メッセージ送信
+    // =========================
+
     const telegramUrl =
       "https://api.telegram.org/bot" +
       token +
