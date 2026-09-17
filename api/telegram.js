@@ -14,8 +14,6 @@ module.exports = async function handler(req, res) {
     const text = message.text || "";
     const chatId = message.chat && message.chat.id;
 
-    // /sales 5000 12
-    // /sales@BotName 5000 12
     const match = text.match(/^\/sales(?:@\S+)?\s+(\d+)\s+(\d+)$/);
 
     if (!match || !chatId) {
@@ -25,10 +23,8 @@ module.exports = async function handler(req, res) {
     const sales = Number(match[1]);
     const orders = Number(match[2]);
 
-    // 500円ごとに●
     const circles = "●".repeat(Math.floor(sales / 500));
 
-    // 日本時間
     const now = new Date();
 
     const date = new Intl.DateTimeFormat("ja-JP", {
@@ -76,4 +72,3 @@ module.exports = async function handler(req, res) {
     return res.status(200).send("OK");
   }
 };
-
