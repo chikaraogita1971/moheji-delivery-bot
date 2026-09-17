@@ -6,9 +6,18 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
-    const redisUrl = process.env.KV_REST_API_URL?.trim();
-    const redisToken = process.env.KV_REST_API_TOKEN?.trim();
+    // ========================================
+    // 環境変数
+    // ========================================
+
+    const token =
+      process.env.TELEGRAM_BOT_TOKEN?.trim();
+
+    const redisUrl =
+      process.env.KV_REST_API_URL?.trim();
+
+    const redisToken =
+      process.env.KV_REST_API_TOKEN?.trim();
 
     if (!token) {
       return res.status(500).send("TOKEN MISSING");
@@ -44,6 +53,7 @@ module.exports = async function handler(req, res) {
 
     // ========================================
     // コマンド
+    //
     // /sales 5000 12
     // /cancel 5000 12
     // ========================================
@@ -57,14 +67,23 @@ module.exports = async function handler(req, res) {
     }
 
     const command = match[1];
-    const inputSales = Number(match[2]);
-    const inputOrders = Number(match[3]);
+
+    const inputSales =
+      Number(match[2]);
+
+    const inputOrders =
+      Number(match[3]);
 
     const sign =
-      command === "cancel" ? -1 : 1;
+      command === "cancel"
+        ? -1
+        : 1;
 
-    const sales = inputSales * sign;
-    const orders = inputOrders * sign;
+    const sales =
+      inputSales * sign;
+
+    const orders =
+      inputOrders * sign;
 
     // ========================================
     // 東京時間
@@ -81,13 +100,24 @@ module.exports = async function handler(req, res) {
       }).formatToParts(new Date());
 
     const getPart = (type) =>
-      parts.find((p) => p.type === type)?.value || "";
+      parts.find(
+        (p) => p.type === type
+      )?.value || "";
 
-    const year = getPart("year");
-    const month = getPart("month");
-    const day = getPart("day");
-    const hour = getPart("hour");
-    const minute = getPart("minute");
+    const year =
+      getPart("year");
+
+    const month =
+      getPart("month");
+
+    const day =
+      getPart("day");
+
+    const hour =
+      getPart("hour");
+
+    const minute =
+      getPart("minute");
 
     const yearMonth =
       `${year}-${month}`;
@@ -103,19 +133,23 @@ module.exports = async function handler(req, res) {
     // ========================================
 
     async function redisCommand(commandArgs) {
-      const response = await fetch(
-        redisUrl,
-        {
-          method: "POST",
-          headers: {
-            Authorization:
-              `Bearer ${redisToken}`,
-            "Content-Type":
-              "application/json"
-          },
-          body: JSON.stringify(commandArgs)
-        }
-      );
+      const response =
+        await fetch(
+          redisUrl,
+          {
+            method: "POST",
+            headers: {
+              Authorization:
+                `Bearer ${redisToken}`,
+
+              "Content-Type":
+                "application/json"
+            },
+
+            body:
+              JSON.stringify(commandArgs)
+          }
+        );
 
       const result =
         await response.json();
@@ -153,7 +187,7 @@ module.exports = async function handler(req, res) {
       `moheji:delivery:total`;
 
     // ========================================
-    // 月間
+    // 月間売上・件数
     // ========================================
 
     let monthlySales =
@@ -177,7 +211,7 @@ module.exports = async function handler(req, res) {
       );
 
     // ========================================
-    // 年間
+    // 年間売上・件数
     // ========================================
 
     let yearlySales =
@@ -201,7 +235,7 @@ module.exports = async function handler(req, res) {
       );
 
     // ========================================
-    // 今日
+    // 今日の売上・件数
     // ========================================
 
     let todaySales =
@@ -425,7 +459,8 @@ module.exports = async function handler(req, res) {
     // 月間目標
     // ========================================
 
-    const targetSales = 500000;
+    const targetSales =
+      500000;
 
     const achievementRate =
       targetSales > 0
@@ -439,9 +474,10 @@ module.exports = async function handler(req, res) {
 
     // ========================================
     // 緑丸
-    // 今日の売上の下
+    //
     // 1,000円 = 1個
     // 最大10個
+    // 今日の累計売上を基準
     // ========================================
 
     const circleCount =
@@ -458,12 +494,14 @@ module.exports = async function handler(req, res) {
       );
 
     // ========================================
-    // メッセージ
+    // メッセージ作成
     // ========================================
 
     const lines = [];
 
-    if (command === "cancel") {
+    if (
+      command === "cancel"
+    ) {
       lines.push(
         "↩️ 売上を訂正しました"
       );
@@ -549,25 +587,35 @@ module.exports = async function handler(req, res) {
 
     // ========================================
     // Telegram送信
-    // 画像なし
+    // GitHubのmoheji.pngを使用
     // ========================================
 
     const telegramUrl =
-      `https://api.telegram.org/bot${token}/sendMessage`;
+      `https://api.telegram.org/bot${token}/sendPhoto`;
+
+    const photoUrl =
+      "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/main/moheji.png";
 
     const telegramResponse =
       await fetch(
         telegramUrl,
         {
           method: "POST",
+
           headers: {
             "Content-Type":
               "application/json"
           },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: messageText
-          })
+
+          body:
+            JSON.stringify({
+              chat_id: chatId,
+
+              photo: photoUrl,
+
+              caption:
+                messageText
+            })
         }
       );
 
@@ -589,6 +637,11 @@ module.exports = async function handler(req, res) {
       error
     );
 
+    return res
+      .status(200)
+      .send("OK");
+  }
+};
     return res
       .status(200)
       .send("OK");
