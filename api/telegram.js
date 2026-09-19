@@ -121,7 +121,7 @@ module.exports = async function handler(req, res) {
         body: JSON.stringify({
           chat_id: chatId,
           photo:
-            "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/main/moheji.png",
+            "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/refs/heads/main/D261A432-2C27-4ADD-900E-E6BE35B57595.png",
           caption,
         }),
       }
