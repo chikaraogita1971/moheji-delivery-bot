@@ -10,6 +10,21 @@ const RECORD_PREFIX = "moheji:delivery:record:";
 const SALES_IMAGE =
   "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/refs/heads/main/D261A432-2C27-4ADD-900E-E6BE35B57595.png";
 
+const MONTH_NAMES = [
+  "1月",
+  "2月",
+  "3月",
+  "4月",
+  "5月",
+  "6月",
+  "7月",
+  "8月",
+  "9月",
+  "10月",
+  "11月",
+  "12月",
+];
+
 /* =========================================================
    Environment
 ========================================================= */
@@ -29,7 +44,7 @@ function assertEnv() {
 }
 
 /* =========================================================
-   Redis REST
+   Redis
 ========================================================= */
 
 async function redisCommand(command, ...args) {
@@ -120,10 +135,11 @@ async function telegram(method, body) {
   return response.json();
 }
 
-async function sendMessage(chatId, text) {
+async function sendMessage(chatId, text, extra = {}) {
   return telegram("sendMessage", {
     chat_id: chatId,
     text,
+    ...extra,
   });
 }
 
@@ -135,6 +151,26 @@ async function sendPhoto(chatId, photo, caption) {
   });
 }
 
+async function answerCallbackQuery(callbackQueryId) {
+  return telegram("answerCallbackQuery", {
+    callback_query_id: callbackQueryId,
+  });
+}
+
+async function editMessageText(
+  chatId,
+  messageId,
+  text,
+  replyMarkup
+) {
+  return telegram("editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    reply_markup: replyMarkup,
+  });
+}
+
 /* =========================================================
    Helpers
 ========================================================= */
@@ -142,16 +178,17 @@ async function sendPhoto(chatId, photo, caption) {
 function numberValue(value) {
   const n = Number(value);
 
-  if (!Number.isFinite(n)) {
-    return 0;
-  }
-
-  return n;
+  return Number.isFinite(n)
+    ? n
+    : 0;
 }
 
 function hashArrayToObject(value) {
   if (!Array.isArray(value)) {
-    if (value && typeof value === "object") {
+    if (
+      value &&
+      typeof value === "object"
+    ) {
       return value;
     }
 
@@ -160,7 +197,11 @@ function hashArrayToObject(value) {
 
   const result = {};
 
-  for (let i = 0; i < value.length; i += 2) {
+  for (
+    let i = 0;
+    i < value.length;
+    i += 2
+  ) {
     const field = value[i];
     const fieldValue = value[i + 1];
 
@@ -186,7 +227,9 @@ function parseTimestamp(value) {
     const n = Number(text);
 
     if (n > 0) {
-      return n < 1e12 ? n * 1000 : n;
+      return n < 1e12
+        ? n * 1000
+        : n;
     }
   }
 
@@ -199,10 +242,14 @@ function parseTimestamp(value) {
 
 function isCancelled(record) {
   const cancelled =
-    String(record.cancelled ?? "").toLowerCase();
+    String(
+      record.cancelled ?? ""
+    ).toLowerCase();
 
   const status =
-    String(record.status ?? "").toLowerCase();
+    String(
+      record.status ?? ""
+    ).toLowerCase();
 
   return (
     cancelled === "1" ||
@@ -219,27 +266,30 @@ function isCancelled(record) {
 function jstParts(timestamp) {
   const date = new Date(timestamp);
 
-  const formatter = new Intl.DateTimeFormat(
-    "ja-JP",
-    {
-      timeZone: "Asia/Tokyo",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hourCycle: "h23",
-    }
-  );
+  const formatter =
+    new Intl.DateTimeFormat(
+      "ja-JP",
+      {
+        timeZone: "Asia/Tokyo",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23",
+      }
+    );
 
-  const parts = formatter.formatToParts(date);
+  const parts =
+    formatter.formatToParts(date);
 
   const result = {};
 
   for (const part of parts) {
     if (part.type !== "literal") {
-      result[part.type] = part.value;
+      result[part.type] =
+        part.value;
     }
   }
 
@@ -247,61 +297,358 @@ function jstParts(timestamp) {
 }
 
 function dateKeyFromTimestamp(timestamp) {
-  const p = jstParts(timestamp);
+  const p =
+    jstParts(timestamp);
 
   return `${p.year}-${p.month}-${p.day}`;
 }
 
 function monthKeyFromTimestamp(timestamp) {
-  const p = jstParts(timestamp);
+  const p =
+    jstParts(timestamp);
 
   return `${p.year}-${p.month}`;
 }
 
 function yearKeyFromTimestamp(timestamp) {
-  const p = jstParts(timestamp);
+  const p =
+    jstParts(timestamp);
 
   return p.year;
 }
 
 function formatJstDate(timestamp) {
-  const p = jstParts(timestamp);
+  const p =
+    jstParts(timestamp);
 
   return `${p.year}年${p.month}月${p.day}日 ${p.hour}:${p.minute}`;
+}
+
+/* =========================================================
+   Calendar date utilities
+========================================================= */
+
+function isValidDateKey(dateKey) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(
+    String(dateKey)
+  );
+}
+
+function parseDateKey(dateKey) {
+  if (!isValidDateKey(dateKey)) {
+    return null;
+  }
+
+  const [year, month, day] =
+    dateKey.split("-").map(Number);
+
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
+    return null;
+  }
+
+  const test =
+    new Date(
+      Date.UTC(
+        year,
+        month - 1,
+        day
+      )
+    );
+
+  if (
+    test.getUTCFullYear() !== year ||
+    test.getUTCMonth() !== month - 1 ||
+    test.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return {
+    year,
+    month,
+    day,
+  };
+}
+
+function dateKeyFromParts(
+  year,
+  month,
+  day
+) {
+  return [
+    String(year).padStart(4, "0"),
+    String(month).padStart(2, "0"),
+    String(day).padStart(2, "0"),
+  ].join("-");
+}
+
+function addMonths(
+  year,
+  month,
+  delta
+) {
+  const d =
+    new Date(
+      Date.UTC(
+        year,
+        month - 1 + delta,
+        1
+      )
+    );
+
+  return {
+    year: d.getUTCFullYear(),
+    month: d.getUTCMonth() + 1,
+  };
+}
+
+/*
+ * JSTの日付キーをミリ秒へ変換。
+ *
+ * 00:00 JST = 前日15:00 UTC
+ */
+function dateKeyToTimestamp(dateKey) {
+  const parsed =
+    parseDateKey(dateKey);
+
+  if (!parsed) {
+    return 0;
+  }
+
+  return Date.UTC(
+    parsed.year,
+    parsed.month - 1,
+    parsed.day,
+    0,
+    0,
+    0
+  ) - 9 * 60 * 60 * 1000;
+}
+
+function formatDateKeyJapanese(
+  dateKey
+) {
+  const parsed =
+    parseDateKey(dateKey);
+
+  if (!parsed) {
+    return dateKey;
+  }
+
+  return `${parsed.year}年${parsed.month}月${parsed.day}日`;
+}
+
+/* =========================================================
+   Calendar keyboard
+========================================================= */
+
+function buildCalendarKeyboard(
+  year,
+  month
+) {
+  const daysInMonth =
+    new Date(
+      Date.UTC(
+        year,
+        month,
+        0
+      )
+    ).getUTCDate();
+
+  const firstDay =
+    new Date(
+      Date.UTC(
+        year,
+        month - 1,
+        1
+      )
+    ).getUTCDay();
+
+  const rows = [];
+
+  /*
+   * 月移動
+   */
+  const previous =
+    addMonths(
+      year,
+      month,
+      -1
+    );
+
+  const next =
+    addMonths(
+      year,
+      month,
+      1
+    );
+
+  rows.push([
+    {
+      text: "‹ 前月",
+      callback_data:
+        `cal:${previous.year}-${String(previous.month).padStart(2, "0")}-01`,
+    },
+    {
+      text:
+        `${year}年 ${MONTH_NAMES[month - 1]}`,
+      callback_data: "cal:none",
+    },
+    {
+      text: "次月 ›",
+      callback_data:
+        `cal:${next.year}-${String(next.month).padStart(2, "0")}-01`,
+    },
+  ]);
+
+  /*
+   * 曜日
+   */
+  rows.push([
+    { text: "日", callback_data: "cal:none" },
+    { text: "月", callback_data: "cal:none" },
+    { text: "火", callback_data: "cal:none" },
+    { text: "水", callback_data: "cal:none" },
+    { text: "木", callback_data: "cal:none" },
+    { text: "金", callback_data: "cal:none" },
+    { text: "土", callback_data: "cal:none" },
+  ]);
+
+  let row = [];
+
+  /*
+   * 月初まで空白
+   */
+  for (
+    let i = 0;
+    i < firstDay;
+    i++
+  ) {
+    row.push({
+      text: " ",
+      callback_data: "cal:none",
+    });
+  }
+
+  /*
+   * 日付
+   */
+  for (
+    let day = 1;
+    day <= daysInMonth;
+    day++
+  ) {
+    const dateKey =
+      dateKeyFromParts(
+        year,
+        month,
+        day
+      );
+
+    row.push({
+      text: String(day),
+      callback_data:
+        `date:${dateKey}`,
+    });
+
+    if (
+      row.length === 7
+    ) {
+      rows.push(row);
+      row = [];
+    }
+  }
+
+  /*
+   * 最終行
+   */
+  if (row.length > 0) {
+    while (
+      row.length < 7
+    ) {
+      row.push({
+        text: " ",
+        callback_data: "cal:none",
+      });
+    }
+
+    rows.push(row);
+  }
+
+  /*
+   * 今日ボタン
+   */
+  const today =
+    jstParts(Date.now());
+
+  const todayKey =
+    `${today.year}-${today.month}-${today.day}`;
+
+  rows.push([
+    {
+      text: "📅 今日",
+      callback_data:
+        `date:${todayKey}`,
+    },
+  ]);
+
+  return {
+    inline_keyboard: rows,
+  };
 }
 
 /* =========================================================
    Record key
 ========================================================= */
 
-function makeRecordKey(chatId, recordId) {
+function makeRecordKey(
+  chatId,
+  recordId
+) {
   return `${RECORD_PREFIX}${chatId}:${recordId}`;
 }
 
 function getChatIdFromKey(key) {
-  const prefix = RECORD_PREFIX;
+  const prefix =
+    RECORD_PREFIX;
 
-  if (!String(key).startsWith(prefix)) {
+  if (
+    !String(key).startsWith(prefix)
+  ) {
     return "";
   }
 
   const rest =
-    String(key).slice(prefix.length);
+    String(key).slice(
+      prefix.length
+    );
 
-  const separator = rest.indexOf(":");
+  const separator =
+    rest.indexOf(":");
 
   if (separator === -1) {
     return "";
   }
 
-  return rest.slice(0, separator);
+  return rest.slice(
+    0,
+    separator
+  );
 }
 
 /* =========================================================
    Record normalize
 ========================================================= */
 
-function normalizeRecord(key, raw) {
+function normalizeRecord(
+  key,
+  raw
+) {
   const record = {
     ...raw,
   };
@@ -309,8 +656,12 @@ function normalizeRecord(key, raw) {
   const keyChatId =
     getChatIdFromKey(key);
 
-  if (!record.chatId && keyChatId) {
-    record.chatId = keyChatId;
+  if (
+    !record.chatId &&
+    keyChatId
+  ) {
+    record.chatId =
+      keyChatId;
   }
 
   record.key = key;
@@ -320,21 +671,23 @@ function normalizeRecord(key, raw) {
     record.id ??
     "";
 
-  record.sales = numberValue(
-    record.sales ??
-      record.amount ??
-      record.totalSales ??
-      record.total ??
-      0
-  );
+  record.sales =
+    numberValue(
+      record.sales ??
+        record.amount ??
+        record.totalSales ??
+        record.total ??
+        0
+    );
 
-  record.orders = numberValue(
-    record.orders ??
-      record.count ??
-      record.quantity ??
-      record.deliveryCount ??
-      0
-  );
+  record.orders =
+    numberValue(
+      record.orders ??
+        record.count ??
+        record.quantity ??
+        record.deliveryCount ??
+        0
+    );
 
   record.createdAt =
     record.createdAt ??
@@ -342,38 +695,49 @@ function normalizeRecord(key, raw) {
     "";
 
   record.timestamp =
-    parseTimestamp(record.createdAt);
+    parseTimestamp(
+      record.createdAt
+    );
 
-  if (!record.timestamp && record.key) {
-    record.timestamp = 0;
-  }
-
-  if (!record.dateKey && record.timestamp) {
+  /*
+   * 過去日入力では
+   * dateKeyが必ず保存される。
+   */
+  if (
+    !record.dateKey &&
+    record.timestamp
+  ) {
     record.dateKey =
       dateKeyFromTimestamp(
         record.timestamp
       );
   }
 
-  if (!record.monthKey && record.timestamp) {
+  if (
+    !record.monthKey &&
+    record.dateKey
+  ) {
     record.monthKey =
-      monthKeyFromTimestamp(
-        record.timestamp
-      );
+      String(
+        record.dateKey
+      ).slice(0, 7);
   }
 
-  if (!record.yearKey && record.timestamp) {
+  if (
+    !record.yearKey &&
+    record.dateKey
+  ) {
     record.yearKey =
-      yearKeyFromTimestamp(
-        record.timestamp
-      );
+      String(
+        record.dateKey
+      ).slice(0, 4);
   }
 
   return record;
 }
 
 /* =========================================================
-   Get all record keys
+   Records
 ========================================================= */
 
 async function getAllRecordKeys() {
@@ -389,29 +753,35 @@ async function getAllRecordKeys() {
         200
       );
 
-    if (!Array.isArray(result)) {
+    if (
+      !Array.isArray(result)
+    ) {
       break;
     }
 
     cursor =
-      String(result[0] ?? "0");
+      String(
+        result[0] ?? "0"
+      );
 
     const batch =
       Array.isArray(result[1])
         ? result[1]
         : [];
 
-    for (const key of batch) {
-      keys.push(String(key));
+    for (
+      const key of batch
+    ) {
+      keys.push(
+        String(key)
+      );
     }
-  } while (cursor !== "0");
+  } while (
+    cursor !== "0"
+  );
 
   return keys;
 }
-
-/* =========================================================
-   Read one record
-========================================================= */
 
 async function getRecord(key) {
   const type =
@@ -458,17 +828,15 @@ async function getRecord(key) {
   return null;
 }
 
-/* =========================================================
-   Get all records
-========================================================= */
-
 async function getAllRecords() {
   const keys =
     await getAllRecordKeys();
 
   const records = [];
 
-  for (const key of keys) {
+  for (
+    const key of keys
+  ) {
     try {
       const record =
         await getRecord(key);
@@ -489,15 +857,17 @@ async function getAllRecords() {
 }
 
 /* =========================================================
-   Create new sales record
+   Create record
 ========================================================= */
 
 async function createSalesRecord(
   chatId,
   sales,
-  orders
+  orders,
+  dateKey
 ) {
-  const now = Date.now();
+  const now =
+    Date.now();
 
   const recordId =
     `${now}-${Math.random()
@@ -510,27 +880,51 @@ async function createSalesRecord(
       recordId
     );
 
+  const parsedDate =
+    parseDateKey(dateKey);
+
+  if (!parsedDate) {
+    throw new Error(
+      "Invalid date"
+    );
+  }
+
   const record = {
     id: recordId,
     recordId,
-    chatId: String(chatId),
 
-    sales: String(sales),
-    orders: String(orders),
+    chatId:
+      String(chatId),
+
+    sales:
+      String(sales),
+
+    orders:
+      String(orders),
 
     cancelled: "0",
     status: "active",
 
-    createdAt: String(now),
+    /*
+     * createdAtは登録した時刻。
+     */
+    createdAt:
+      String(now),
 
-    dateKey:
-      dateKeyFromTimestamp(now),
+    /*
+     * 集計日は指定した配達日。
+     */
+    dateKey,
 
     monthKey:
-      monthKeyFromTimestamp(now),
+      `${parsedDate.year}-${String(
+        parsedDate.month
+      ).padStart(2, "0")}`,
 
     yearKey:
-      yearKeyFromTimestamp(now),
+      String(
+        parsedDate.year
+      ),
   };
 
   await redisCommand(
@@ -567,7 +961,7 @@ async function createSalesRecord(
 }
 
 /* =========================================================
-   Calculate
+   Calculate statistics
 ========================================================= */
 
 function calculateStats(
@@ -593,13 +987,19 @@ function calculateStats(
     );
 
   const todayKey =
-    dateKeyFromTimestamp(now);
+    dateKeyFromTimestamp(
+      now
+    );
 
   const monthKey =
-    monthKeyFromTimestamp(now);
+    monthKeyFromTimestamp(
+      now
+    );
 
   const yearKey =
-    yearKeyFromTimestamp(now);
+    yearKeyFromTimestamp(
+      now
+    );
 
   const todayRecords =
     activeRecords.filter(
@@ -667,21 +1067,13 @@ function calculateStats(
       0
     );
 
-  /*
-   * 月の日別集計
-   */
   const dailyMap = {};
 
-  for (const record of monthRecords) {
-    let dateKey =
+  for (
+    const record of monthRecords
+  ) {
+    const dateKey =
       record.dateKey;
-
-    if (!dateKey && record.timestamp) {
-      dateKey =
-        dateKeyFromTimestamp(
-          record.timestamp
-        );
-    }
 
     if (!dateKey) {
       continue;
@@ -806,6 +1198,92 @@ function buildSalesCaption(
 }
 
 /* =========================================================
+   Calendar
+========================================================= */
+
+async function showCalendar(
+  chatId,
+  messageId = null,
+  year = null,
+  month = null
+) {
+  const now =
+    jstParts(Date.now());
+
+  const targetYear =
+    year ??
+    Number(now.year);
+
+  const targetMonth =
+    month ??
+    Number(now.month);
+
+  const keyboard =
+    buildCalendarKeyboard(
+      targetYear,
+      targetMonth
+    );
+
+  const text =
+    "📅 配達日を選択してください\n\n" +
+    "過去の日付も選択できます。";
+
+  if (messageId) {
+    await editMessageText(
+      chatId,
+      messageId,
+      text,
+      keyboard
+    );
+  } else {
+    await sendMessage(
+      chatId,
+      text,
+      {
+        reply_markup:
+          keyboard,
+      }
+    );
+  }
+}
+
+/* =========================================================
+   Pending date
+========================================================= */
+
+function pendingDateKey(
+  chatId
+) {
+  return `moheji:delivery:pending:${chatId}`;
+}
+
+async function setPendingDate(
+  chatId,
+  dateKey
+) {
+  await redisSet(
+    pendingDateKey(chatId),
+    dateKey
+  );
+}
+
+async function getPendingDate(
+  chatId
+) {
+  return redisGet(
+    pendingDateKey(chatId)
+  );
+}
+
+async function clearPendingDate(
+  chatId
+) {
+  await redisDel(
+    pendingDateKey(chatId)
+  );
+}
+
+/* =========================================================
    /sales
 ========================================================= */
 
@@ -814,22 +1292,28 @@ async function handleSales(
   args
 ) {
   /*
+   * /sales
+   *
+   * カレンダーを表示
+   */
+  if (
+    args.length === 0
+  ) {
+    await showCalendar(
+      chatId
+    );
+
+    return;
+  }
+
+  /*
    * /sales 17014 17
    *
-   * 引数がある場合：
-   * 売上実績を登録してから表示
+   * 今日として登録
    */
-
-  if (args.length > 0) {
-    if (args.length !== 2) {
-      await sendMessage(
-        chatId,
-        "⚠️ 入力形式が違います。\n\n例：\n/sales 17014 17"
-      );
-
-      return;
-    }
-
+  if (
+    args.length === 2
+  ) {
     const sales =
       numberValue(
         String(args[0]).replace(
@@ -858,22 +1342,267 @@ async function handleSales(
       return;
     }
 
+    const now =
+      Date.now();
+
+    const todayKey =
+      dateKeyFromTimestamp(
+        now
+      );
+
     await createSalesRecord(
       chatId,
       sales,
-      orders
+      orders,
+      todayKey
     );
+
+    await clearPendingDate(
+      chatId
+    );
+
+    /*
+     * 登録後に必ず再取得。
+     */
+    const records =
+      await getAllRecords();
+
+    const stats =
+      calculateStats(
+        records,
+        chatId,
+        now
+      );
+
+    await sendPhoto(
+      chatId,
+      SALES_IMAGE,
+      buildSalesCaption(
+        stats,
+        now
+      )
+    );
+
+    return;
   }
 
   /*
-   * 登録後、必ず最新データを再取得。
-   * これが重要。
+   * それ以外
    */
+  await sendMessage(
+    chatId,
+    "⚠️ 入力形式が違います。\n\n今日の実績：\n/sales 17014 17\n\n過去の実績：\n/sales\n→ カレンダーから日付を選択"
+  );
+}
 
+/* =========================================================
+   Calendar callback
+========================================================= */
+
+async function handleCallbackQuery(
+  callbackQuery
+) {
+  const callbackId =
+    callbackQuery.id;
+
+  const data =
+    callbackQuery.data || "";
+
+  const message =
+    callbackQuery.message;
+
+  if (!message) {
+    await answerCallbackQuery(
+      callbackId
+    );
+
+    return;
+  }
+
+  const chatId =
+    message.chat?.id;
+
+  const messageId =
+    message.message_id;
+
+  if (!chatId) {
+    await answerCallbackQuery(
+      callbackId
+    );
+
+    return;
+  }
+
+  /*
+   * 無効ボタン
+   */
+  if (
+    data === "cal:none"
+  ) {
+    await answerCallbackQuery(
+      callbackId
+    );
+
+    return;
+  }
+
+  /*
+   * 月移動
+   */
+  if (
+    data.startsWith("cal:")
+  ) {
+    const value =
+      data.slice(4);
+
+    const parsed =
+      parseDateKey(value);
+
+    if (!parsed) {
+      await answerCallbackQuery(
+        callbackId
+      );
+
+      return;
+    }
+
+    await answerCallbackQuery(
+      callbackId
+    );
+
+    await showCalendar(
+      chatId,
+      messageId,
+      parsed.year,
+      parsed.month
+    );
+
+    return;
+  }
+
+  /*
+   * 日付選択
+   */
+  if (
+    data.startsWith("date:")
+  ) {
+    const dateKey =
+      data.slice(5);
+
+    const parsed =
+      parseDateKey(dateKey);
+
+    if (!parsed) {
+      await answerCallbackQuery(
+        callbackId
+      );
+
+      return;
+    }
+
+    await setPendingDate(
+      chatId,
+      dateKey
+    );
+
+    await answerCallbackQuery(
+      callbackId
+    );
+
+    await editMessageText(
+      chatId,
+      messageId,
+      `📅 ${formatDateKeyJapanese(dateKey)}を選択しました。\n\n売上と件数を入力してください。\n\n例：\n17014 17`
+    );
+
+    return;
+  }
+
+  await answerCallbackQuery(
+    callbackId
+  );
+}
+
+/* =========================================================
+   Pending sales input
+========================================================= */
+
+async function handlePendingSalesInput(
+  chatId,
+  text
+) {
+  const dateKey =
+    await getPendingDate(
+      chatId
+    );
+
+  if (!dateKey) {
+    return false;
+  }
+
+  const parts =
+    String(text)
+      .trim()
+      .split(/\s+/);
+
+  if (
+    parts.length !== 2
+  ) {
+    await sendMessage(
+      chatId,
+      `⚠️ 入力形式が違います。\n\n📅 ${formatDateKeyJapanese(dateKey)}\n\n例：\n17014 17`
+    );
+
+    return true;
+  }
+
+  const sales =
+    numberValue(
+      String(parts[0]).replace(
+        /,/g,
+        ""
+      )
+    );
+
+  const orders =
+    numberValue(
+      String(parts[1]).replace(
+        /,/g,
+        ""
+      )
+    );
+
+  if (
+    sales <= 0 ||
+    orders <= 0
+  ) {
+    await sendMessage(
+      chatId,
+      "⚠️ 売上と件数は1以上の数字で入力してください。"
+    );
+
+    return true;
+  }
+
+  await createSalesRecord(
+    chatId,
+    sales,
+    orders,
+    dateKey
+  );
+
+  await clearPendingDate(
+    chatId
+  );
+
+  /*
+   * 登録後に最新データを再取得
+   */
   const records =
     await getAllRecords();
 
-  const now = Date.now();
+  const now =
+    Date.now();
 
   const stats =
     calculateStats(
@@ -882,17 +1611,21 @@ async function handleSales(
       now
     );
 
-  const caption =
-    buildSalesCaption(
-      stats,
-      now
-    );
+  await sendMessage(
+    chatId,
+    `✅ 実績を登録しました。\n\n📅 ${formatDateKeyJapanese(dateKey)}\n💰 ${sales.toLocaleString("ja-JP")}円\n📦 ${orders.toLocaleString("ja-JP")}件`
+  );
 
   await sendPhoto(
     chatId,
     SALES_IMAGE,
-    caption
+    buildSalesCaption(
+      stats,
+      now
+    )
   );
+
+  return true;
 }
 
 /* =========================================================
@@ -908,7 +1641,9 @@ async function cancelRecord(
   const type =
     await redisType(key);
 
-  if (type === "hash") {
+  if (
+    type === "hash"
+  ) {
     await redisHSet(
       key,
       "cancelled",
@@ -920,7 +1655,9 @@ async function cancelRecord(
     return;
   }
 
-  if (type === "string") {
+  if (
+    type === "string"
+  ) {
     const value =
       await redisGet(key);
 
@@ -942,7 +1679,8 @@ async function cancelRecord(
     }
 
     parsed.cancelled = true;
-    parsed.status = "cancelled";
+    parsed.status =
+      "cancelled";
 
     await redisSet(
       key,
@@ -999,9 +1737,16 @@ async function handleCancel(
     target
   );
 
+  const dateText =
+    target.dateKey
+      ? formatDateKeyJapanese(
+          target.dateKey
+        )
+      : "日付不明";
+
   await sendMessage(
     chatId,
-    `↩️ 最新の配達実績を取消しました。\n💰 ${target.sales.toLocaleString("ja-JP")}円\n📦 ${target.orders.toLocaleString("ja-JP")}件`
+    `↩️ 配達実績を取消しました。\n\n📅 ${dateText}\n💰 売上　${target.sales.toLocaleString("ja-JP")}円\n📦 件数　${target.orders.toLocaleString("ja-JP") }件`
   );
 }
 
@@ -1043,6 +1788,10 @@ async function handleReset(
     }
   }
 
+  await clearPendingDate(
+    chatId
+  );
+
   await sendMessage(
     chatId,
     `🗑️ 実績を初期化しました。\n\n削除件数　${deleted.toLocaleString("ja-JP")}件\n\nこれで自分の実績は0から再スタートです。`
@@ -1055,7 +1804,8 @@ async function handleReset(
 
 function parseCommand(text) {
   const trimmed =
-    String(text || "").trim();
+    String(text || "")
+      .trim();
 
   if (!trimmed) {
     return {
@@ -1072,12 +1822,9 @@ function parseCommand(text) {
       .split("@")[0]
       .toLowerCase();
 
-  const args =
-    parts.slice(1);
-
   return {
     command,
-    args,
+    args: parts.slice(1),
   };
 }
 
@@ -1089,7 +1836,9 @@ export default async function handler(
   req,
   res
 ) {
-  if (req.method !== "POST") {
+  if (
+    req.method !== "POST"
+  ) {
     return res.status(200).json({
       ok: true,
     });
@@ -1100,6 +1849,21 @@ export default async function handler(
 
     const update =
       req.body;
+
+    /*
+     * Telegram callback
+     */
+    if (
+      update?.callback_query
+    ) {
+      await handleCallbackQuery(
+        update.callback_query
+      );
+
+      return res.status(200).json({
+        ok: true,
+      });
+    }
 
     const message =
       update?.message;
@@ -1122,37 +1886,69 @@ export default async function handler(
     const text =
       message.text || "";
 
-    const {
-      command,
-      args,
-    } = parseCommand(text);
-
-    if (command === "/sales") {
-      await handleSales(
-        chatId,
-        args
-      );
-    }
-
-    else if (
-      command === "/cancel"
+    /*
+     * コマンド
+     */
+    if (
+      text.startsWith("/")
     ) {
-      await handleCancel(
-        chatId
-      );
-    }
+      const {
+        command,
+        args,
+      } = parseCommand(text);
 
-    else if (
-      command === "/reset"
-    ) {
-      await handleReset(
-        chatId
-      );
+      if (
+        command === "/sales"
+      ) {
+        await handleSales(
+          chatId,
+          args
+        );
+      }
+
+      else if (
+        command === "/cancel"
+      ) {
+        await handleCancel(
+          chatId
+        );
+      }
+
+      else if (
+        command === "/reset"
+      ) {
+        await handleReset(
+          chatId
+        );
+      }
+
+      /*
+       * /record は存在しない
+       */
+
+      return res.status(200).json({
+        ok: true,
+      });
     }
 
     /*
-     * /record は意図的に存在しない。
+     * カレンダーで日付を選んだ後の
+     *
+     * 17014 17
+     *
+     * を処理
      */
+    const handled =
+      await handlePendingSalesInput(
+        chatId,
+        text
+      );
+
+    if (handled) {
+      return res.status(200).json({
+        ok: true,
+      });
+    }
 
     return res.status(200).json({
       ok: true,
