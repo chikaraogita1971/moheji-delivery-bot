@@ -42,6 +42,7 @@ module.exports = async function handler(req, res) {
       KV_REST_API_URL,
       {
         method: "POST",
+
         headers: {
           Authorization:
             `Bearer ${KV_REST_API_TOKEN}`,
@@ -667,8 +668,7 @@ module.exports = async function handler(req, res) {
       "\n"
     );
   }
-
-  // =========================================================
+    // =========================================================
   // 売上レコード保存
   // =========================================================
 
@@ -827,7 +827,8 @@ module.exports = async function handler(req, res) {
 
     return null;
   }
-    // =========================================================
+
+  // =========================================================
   // 売上登録
   // =========================================================
 
@@ -1060,7 +1061,7 @@ module.exports = async function handler(req, res) {
     chatId,
   }) {
     // =======================================================
-    // ① 新方式の個別レコード
+    // ① 新方式：個別レコードから直近を探す
     // =======================================================
 
     const record =
@@ -1107,7 +1108,7 @@ module.exports = async function handler(req, res) {
         "moheji:delivery:alltime";
 
       // -------------------------------------------------------
-      // 日次
+      // 日次減算
       // -------------------------------------------------------
 
       const daily =
@@ -1145,7 +1146,7 @@ module.exports = async function handler(req, res) {
       ]);
 
       // -------------------------------------------------------
-      // 月間
+      // 月間減算
       // -------------------------------------------------------
 
       const monthly =
@@ -1183,7 +1184,7 @@ module.exports = async function handler(req, res) {
       ]);
 
       // -------------------------------------------------------
-      // 年間
+      // 年間減算
       // -------------------------------------------------------
 
       const yearly =
@@ -1221,7 +1222,7 @@ module.exports = async function handler(req, res) {
       ]);
 
       // -------------------------------------------------------
-      // 累計売上・累計件数
+      // 累計減算
       // -------------------------------------------------------
 
       const allTimeSalesRaw =
@@ -1238,21 +1239,9 @@ module.exports = async function handler(req, res) {
           "orders",
         ]);
 
-      const allTimeSales =
-        safeNumber(
-          allTimeSalesRaw
-        );
-
       const allTimeOrders =
         safeNumber(
           allTimeOrdersRaw
-        );
-
-      const newAllTimeSales =
-        Math.max(
-          0,
-          allTimeSales -
-            sales
         );
 
       const newAllTimeOrders =
@@ -1262,20 +1251,46 @@ module.exports = async function handler(req, res) {
             orders
         );
 
+      // orders は必ず更新
       await redisCommand([
         "HSET",
         allTimeKey,
-
-        "sales",
-        String(
-          newAllTimeSales
-        ),
 
         "orders",
         String(
           newAllTimeOrders
         ),
       ]);
+
+      // sales は値が存在するときだけ更新
+      // 旧システムで alltime.sales が存在しない場合、
+      // 勝手に0を作ってしまわない。
+      if (
+        allTimeSalesRaw !== null &&
+        allTimeSalesRaw !== undefined
+      ) {
+        const allTimeSales =
+          safeNumber(
+            allTimeSalesRaw
+          );
+
+        const newAllTimeSales =
+          Math.max(
+            0,
+            allTimeSales -
+              sales
+          );
+
+        await redisCommand([
+          "HSET",
+          allTimeKey,
+
+          "sales",
+          String(
+            newAllTimeSales
+          ),
+        ]);
+      }
 
       // -------------------------------------------------------
       // 稼働日
@@ -1306,17 +1321,23 @@ module.exports = async function handler(req, res) {
         success:
           true,
 
-        ...record,
+        recordId:
+          record.id,
+
+        chatId,
 
         sales,
+
         orders,
 
         dateKey,
+
         monthKey,
+
         yearKey,
 
-        cancelled:
-          true,
+        migration:
+          false,
       };
     }
 
@@ -1324,14 +1345,12 @@ module.exports = async function handler(req, res) {
     // ② 旧方式の売上を1回だけ救済
     // =======================================================
     //
-    // 旧コードでは個別レコードが無かったため、
-    // 今回指定された
+    // 旧コードでは個別レコードが存在しないため、
+    // 指定されていた過去売上だけを1回だけ戻す。
     //
     // 2026-10-04
     // 17,014円
     // 17件
-    //
-    // を1回だけ戻す。
     // =======================================================
 
     const migrationDateKey =
@@ -1358,7 +1377,9 @@ module.exports = async function handler(req, res) {
         migrationKey,
       ]);
 
-    if (alreadyMigrated) {
+    if (
+      alreadyMigrated
+    ) {
       return {
         success:
           false,
@@ -1518,8 +1539,7 @@ module.exports = async function handler(req, res) {
         newMigrationYearlyOrders
       ),
     ]);
-
-    // -------------------------------------------------------
+        // -------------------------------------------------------
     // 累計減算
     // -------------------------------------------------------
 
@@ -1537,38 +1557,57 @@ module.exports = async function handler(req, res) {
         "orders",
       ]);
 
-    const migrationAllTimeSales =
-      safeNumber(
-        migrationAllTimeSalesRaw
-      );
-
     const migrationAllTimeOrders =
       safeNumber(
         migrationAllTimeOrdersRaw
       );
 
+    const newMigrationAllTimeOrders =
+      Math.max(
+        0,
+        migrationAllTimeOrders -
+          migrationOrders
+      );
+
+    // 累計件数は必ず減算
     await redisCommand([
       "HSET",
       migrationAllTimeKey,
 
-      "sales",
+      "orders",
       String(
+        newMigrationAllTimeOrders
+      ),
+    ]);
+
+    // 旧データでは alltime.sales が存在しない
+    // 可能性があるため、存在するときだけ減算する。
+    if (
+      migrationAllTimeSalesRaw !== null &&
+      migrationAllTimeSalesRaw !== undefined
+    ) {
+      const migrationAllTimeSales =
+        safeNumber(
+          migrationAllTimeSalesRaw
+        );
+
+      const newMigrationAllTimeSales =
         Math.max(
           0,
           migrationAllTimeSales -
             migrationSales
-        )
-      ),
+        );
 
-      "orders",
-      String(
-        Math.max(
-          0,
-          migrationAllTimeOrders -
-            migrationOrders
-        )
-      ),
-    ]);
+      await redisCommand([
+        "HSET",
+        migrationAllTimeKey,
+
+        "sales",
+        String(
+          newMigrationAllTimeSales
+        ),
+      ]);
+    }
 
     // -------------------------------------------------------
     // 稼働日更新
@@ -1612,14 +1651,12 @@ module.exports = async function handler(req, res) {
       yearKey:
         migrationYearKey,
 
-      cancelled:
-        true,
-
       migration:
         true,
     };
   }
-    // =========================================================
+
+  // =========================================================
   // /record
   // =========================================================
 
@@ -1858,18 +1895,22 @@ module.exports = async function handler(req, res) {
     const parts =
       text.split(/\s+/);
 
+    const firstPart =
+      parts[0]
+        .toLowerCase();
+
     let command = "";
 
     if (
-      parts[0] === "/sales" ||
-      parts[0].startsWith(
+      firstPart === "/sales" ||
+      firstPart.startsWith(
         "/sales@"
       )
     ) {
       command = "sales";
     } else if (
-      parts[0] === "/cancel" ||
-      parts[0].startsWith(
+      firstPart === "/cancel" ||
+      firstPart.startsWith(
         "/cancel@"
       )
     ) {
@@ -1882,6 +1923,15 @@ module.exports = async function handler(req, res) {
 
     // =======================================================
     // /cancel
+    // =======================================================
+    //
+    // 引数は無視する。
+    //
+    // /cancel
+    // /cancel 123
+    // /cancel@BotName
+    //
+    // いずれでも直近の未キャンセル売上を取り消す。
     // =======================================================
 
     if (
