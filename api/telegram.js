@@ -2,9 +2,17 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const KV_REST_API_URL = process.env.KV_REST_API_URL;
 const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN;
 
-const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
+const TELEGRAM_API =
+  `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 
 const RECORD_PREFIX = "moheji:delivery:record:";
+
+const SALES_IMAGE =
+  "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/refs/heads/main/D261A432-2C27-4ADD-900E-E6BE35B57595.png";
+
+/* =========================================================
+   Environment
+========================================================= */
 
 function assertEnv() {
   if (!TELEGRAM_BOT_TOKEN) {
@@ -20,9 +28,9 @@ function assertEnv() {
   }
 }
 
-/* =========================
+/* =========================================================
    Redis REST
-========================= */
+========================================================= */
 
 async function redisCommand(command, ...args) {
   const response = await fetch(KV_REST_API_URL, {
@@ -36,16 +44,18 @@ async function redisCommand(command, ...args) {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Redis HTTP ${response.status}: ${text}`);
+    throw new Error(
+      `Redis HTTP ${response.status}: ${text}`
+    );
   }
 
   const data = await response.json();
 
-  if (data && data.error) {
+  if (data?.error) {
     throw new Error(`Redis error: ${data.error}`);
   }
 
-  return data ? data.result : null;
+  return data?.result;
 }
 
 async function redisGet(key) {
@@ -68,11 +78,11 @@ async function redisHGetAll(key) {
   return redisCommand("HGETALL", key);
 }
 
-async function redisHSet(key, field, value) {
-  return redisCommand("HSET", key, field, value);
+async function redisHSet(key, ...args) {
+  return redisCommand("HSET", key, ...args);
 }
 
-async function redisScan(cursor, pattern, count = 100) {
+async function redisScan(cursor, pattern, count = 200) {
   return redisCommand(
     "SCAN",
     cursor,
@@ -83,22 +93,28 @@ async function redisScan(cursor, pattern, count = 100) {
   );
 }
 
-/* =========================
+/* =========================================================
    Telegram
-========================= */
+========================================================= */
 
 async function telegram(method, body) {
-  const response = await fetch(`${TELEGRAM_API}/${method}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  const response = await fetch(
+    `${TELEGRAM_API}/${method}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Telegram ${method} ${response.status}: ${text}`);
+
+    throw new Error(
+      `Telegram ${method} ${response.status}: ${text}`
+    );
   }
 
   return response.json();
@@ -119,9 +135,19 @@ async function sendPhoto(chatId, photo, caption) {
   });
 }
 
-/* =========================
-   Utility
-========================= */
+/* =========================================================
+   Helpers
+========================================================= */
+
+function numberValue(value) {
+  const n = Number(value);
+
+  if (!Number.isFinite(n)) {
+    return 0;
+  }
+
+  return n;
+}
 
 function hashArrayToObject(value) {
   if (!Array.isArray(value)) {
@@ -140,7 +166,9 @@ function hashArrayToObject(value) {
 
     if (field !== undefined) {
       result[String(field)] =
-        fieldValue === undefined ? "" : String(fieldValue);
+        fieldValue === undefined
+          ? ""
+          : String(fieldValue);
     }
   }
 
@@ -155,26 +183,26 @@ function parseTimestamp(value) {
   const text = String(value);
 
   if (/^\d+$/.test(text)) {
-    const number = Number(text);
+    const n = Number(text);
 
-    if (number > 0) {
-      return number < 1e12 ? number * 1000 : number;
+    if (n > 0) {
+      return n < 1e12 ? n * 1000 : n;
     }
   }
 
   const parsed = Date.parse(text);
 
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function numberValue(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
+  return Number.isFinite(parsed)
+    ? parsed
+    : 0;
 }
 
 function isCancelled(record) {
-  const cancelled = String(record.cancelled ?? "").toLowerCase();
-  const status = String(record.status ?? "").toLowerCase();
+  const cancelled =
+    String(record.cancelled ?? "").toLowerCase();
+
+  const status =
+    String(record.status ?? "").toLowerCase();
 
   return (
     cancelled === "1" ||
@@ -184,55 +212,26 @@ function isCancelled(record) {
   );
 }
 
-function getRecordId(record, key) {
-  if (record.recordId) {
-    return String(record.recordId);
-  }
-
-  if (record.id) {
-    return String(record.id);
-  }
-
-  const parts = String(key).split(":");
-
-  return parts.length > 0 ? parts[parts.length - 1] : "";
-}
-
-function getChatIdFromKey(key) {
-  const prefix = RECORD_PREFIX;
-
-  if (!String(key).startsWith(prefix)) {
-    return "";
-  }
-
-  const rest = String(key).slice(prefix.length);
-
-  const separator = rest.indexOf(":");
-
-  if (separator === -1) {
-    return "";
-  }
-
-  return rest.slice(0, separator);
-}
-
-/* =========================
+/* =========================================================
    JST
-========================= */
+========================================================= */
 
 function jstParts(timestamp) {
   const date = new Date(timestamp);
 
-  const formatter = new Intl.DateTimeFormat("ja-JP", {
-    timeZone: "Asia/Tokyo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  });
+  const formatter = new Intl.DateTimeFormat(
+    "ja-JP",
+    {
+      timeZone: "Asia/Tokyo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }
+  );
 
   const parts = formatter.formatToParts(date);
 
@@ -271,16 +270,44 @@ function formatJstDate(timestamp) {
   return `${p.year}年${p.month}月${p.day}日 ${p.hour}:${p.minute}`;
 }
 
-/* =========================
-   Record normalization
-========================= */
+/* =========================================================
+   Record key
+========================================================= */
+
+function makeRecordKey(chatId, recordId) {
+  return `${RECORD_PREFIX}${chatId}:${recordId}`;
+}
+
+function getChatIdFromKey(key) {
+  const prefix = RECORD_PREFIX;
+
+  if (!String(key).startsWith(prefix)) {
+    return "";
+  }
+
+  const rest =
+    String(key).slice(prefix.length);
+
+  const separator = rest.indexOf(":");
+
+  if (separator === -1) {
+    return "";
+  }
+
+  return rest.slice(0, separator);
+}
+
+/* =========================================================
+   Record normalize
+========================================================= */
 
 function normalizeRecord(key, raw) {
   const record = {
     ...raw,
   };
 
-  const keyChatId = getChatIdFromKey(key);
+  const keyChatId =
+    getChatIdFromKey(key);
 
   if (!record.chatId && keyChatId) {
     record.chatId = keyChatId;
@@ -288,7 +315,10 @@ function normalizeRecord(key, raw) {
 
   record.key = key;
 
-  record.recordId = getRecordId(record, key);
+  record.recordId =
+    record.recordId ??
+    record.id ??
+    "";
 
   record.sales = numberValue(
     record.sales ??
@@ -309,52 +339,67 @@ function normalizeRecord(key, raw) {
   record.createdAt =
     record.createdAt ??
     record.timestamp ??
-    record.created_at ??
     "";
 
-  record.timestamp = parseTimestamp(record.createdAt);
+  record.timestamp =
+    parseTimestamp(record.createdAt);
 
-  if (!record.timestamp && record.date) {
-    const parsedDate = Date.parse(String(record.date));
-
-    if (Number.isFinite(parsedDate)) {
-      record.timestamp = parsedDate;
-    }
+  if (!record.timestamp && record.key) {
+    record.timestamp = 0;
   }
 
   if (!record.dateKey && record.timestamp) {
-    record.dateKey = dateKeyFromTimestamp(record.timestamp);
+    record.dateKey =
+      dateKeyFromTimestamp(
+        record.timestamp
+      );
   }
 
   if (!record.monthKey && record.timestamp) {
-    record.monthKey = monthKeyFromTimestamp(record.timestamp);
+    record.monthKey =
+      monthKeyFromTimestamp(
+        record.timestamp
+      );
   }
 
   if (!record.yearKey && record.timestamp) {
-    record.yearKey = yearKeyFromTimestamp(record.timestamp);
+    record.yearKey =
+      yearKeyFromTimestamp(
+        record.timestamp
+      );
   }
 
   return record;
 }
 
-/* =========================
-   Record loading
-========================= */
+/* =========================================================
+   Get all record keys
+========================================================= */
 
 async function getAllRecordKeys() {
   let cursor = "0";
+
   const keys = [];
 
   do {
-    const result = await redisScan(cursor, `${RECORD_PREFIX}*`, 200);
+    const result =
+      await redisScan(
+        cursor,
+        `${RECORD_PREFIX}*`,
+        200
+      );
 
     if (!Array.isArray(result)) {
       break;
     }
 
-    cursor = String(result[0] ?? "0");
+    cursor =
+      String(result[0] ?? "0");
 
-    const batch = Array.isArray(result[1]) ? result[1] : [];
+    const batch =
+      Array.isArray(result[1])
+        ? result[1]
+        : [];
 
     for (const key of batch) {
       keys.push(String(key));
@@ -364,26 +409,44 @@ async function getAllRecordKeys() {
   return keys;
 }
 
+/* =========================================================
+   Read one record
+========================================================= */
+
 async function getRecord(key) {
-  const type = await redisType(key);
+  const type =
+    await redisType(key);
 
   if (type === "hash") {
-    const hash = await redisHGetAll(key);
-    return normalizeRecord(key, hashArrayToObject(hash));
+    const raw =
+      await redisHGetAll(key);
+
+    return normalizeRecord(
+      key,
+      hashArrayToObject(raw)
+    );
   }
 
   if (type === "string") {
-    const value = await redisGet(key);
+    const value =
+      await redisGet(key);
 
     if (!value) {
       return null;
     }
 
     try {
-      const parsed = JSON.parse(value);
+      const parsed =
+        JSON.parse(value);
 
-      if (parsed && typeof parsed === "object") {
-        return normalizeRecord(key, parsed);
+      if (
+        parsed &&
+        typeof parsed === "object"
+      ) {
+        return normalizeRecord(
+          key,
+          parsed
+        );
       }
 
       return null;
@@ -395,96 +458,230 @@ async function getRecord(key) {
   return null;
 }
 
+/* =========================================================
+   Get all records
+========================================================= */
+
 async function getAllRecords() {
-  const keys = await getAllRecordKeys();
+  const keys =
+    await getAllRecordKeys();
 
   const records = [];
 
   for (const key of keys) {
     try {
-      const record = await getRecord(key);
+      const record =
+        await getRecord(key);
 
       if (record) {
         records.push(record);
       }
     } catch (error) {
-      console.error("Failed to read record:", key, error);
+      console.error(
+        "Failed to read record:",
+        key,
+        error
+      );
     }
   }
 
   return records;
 }
 
-/* =========================
-   Sales calculation
-========================= */
+/* =========================================================
+   Create new sales record
+========================================================= */
 
-function calculateStats(records, chatId, now) {
-  const targetChatId = String(chatId);
+async function createSalesRecord(
+  chatId,
+  sales,
+  orders
+) {
+  const now = Date.now();
 
-  const ownRecords = records.filter(
-    (record) =>
-      String(record.chatId ?? "") === targetChatId
+  const recordId =
+    `${now}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+
+  const key =
+    makeRecordKey(
+      chatId,
+      recordId
+    );
+
+  const record = {
+    id: recordId,
+    recordId,
+    chatId: String(chatId),
+
+    sales: String(sales),
+    orders: String(orders),
+
+    cancelled: "0",
+    status: "active",
+
+    createdAt: String(now),
+
+    dateKey:
+      dateKeyFromTimestamp(now),
+
+    monthKey:
+      monthKeyFromTimestamp(now),
+
+    yearKey:
+      yearKeyFromTimestamp(now),
+  };
+
+  await redisCommand(
+    "HSET",
+    key,
+    "id",
+    record.id,
+    "recordId",
+    record.recordId,
+    "chatId",
+    record.chatId,
+    "sales",
+    record.sales,
+    "orders",
+    record.orders,
+    "cancelled",
+    record.cancelled,
+    "status",
+    record.status,
+    "createdAt",
+    record.createdAt,
+    "dateKey",
+    record.dateKey,
+    "monthKey",
+    record.monthKey,
+    "yearKey",
+    record.yearKey
   );
 
-  const activeRecords = ownRecords.filter(
-    (record) => !isCancelled(record)
+  return normalizeRecord(
+    key,
+    record
   );
+}
 
-  const todayKey = dateKeyFromTimestamp(now);
-  const monthKey = monthKeyFromTimestamp(now);
-  const yearKey = yearKeyFromTimestamp(now);
+/* =========================================================
+   Calculate
+========================================================= */
 
-  const todayRecords = activeRecords.filter(
-    (record) => String(record.dateKey ?? "") === todayKey
-  );
+function calculateStats(
+  records,
+  chatId,
+  now
+) {
+  const targetChatId =
+    String(chatId);
 
-  const monthRecords = activeRecords.filter(
-    (record) => String(record.monthKey ?? "") === monthKey
-  );
+  const ownRecords =
+    records.filter(
+      (record) =>
+        String(
+          record.chatId ?? ""
+        ) === targetChatId
+    );
 
-  const yearRecords = activeRecords.filter(
-    (record) => String(record.yearKey ?? "") === yearKey
-  );
+  const activeRecords =
+    ownRecords.filter(
+      (record) =>
+        !isCancelled(record)
+    );
 
-  const todaySales = todayRecords.reduce(
-    (sum, record) => sum + record.sales,
-    0
-  );
+  const todayKey =
+    dateKeyFromTimestamp(now);
 
-  const todayOrders = todayRecords.reduce(
-    (sum, record) => sum + record.orders,
-    0
-  );
+  const monthKey =
+    monthKeyFromTimestamp(now);
 
-  const monthSales = monthRecords.reduce(
-    (sum, record) => sum + record.sales,
-    0
-  );
+  const yearKey =
+    yearKeyFromTimestamp(now);
 
-  const monthOrders = monthRecords.reduce(
-    (sum, record) => sum + record.orders,
-    0
-  );
+  const todayRecords =
+    activeRecords.filter(
+      (record) =>
+        String(
+          record.dateKey ?? ""
+        ) === todayKey
+    );
 
-  const yearSales = yearRecords.reduce(
-    (sum, record) => sum + record.sales,
-    0
-  );
+  const monthRecords =
+    activeRecords.filter(
+      (record) =>
+        String(
+          record.monthKey ?? ""
+        ) === monthKey
+    );
 
-  const yearOrders = yearRecords.reduce(
-    (sum, record) => sum + record.orders,
-    0
-  );
+  const yearRecords =
+    activeRecords.filter(
+      (record) =>
+        String(
+          record.yearKey ?? ""
+        ) === yearKey
+    );
 
+  const todaySales =
+    todayRecords.reduce(
+      (sum, record) =>
+        sum + record.sales,
+      0
+    );
+
+  const todayOrders =
+    todayRecords.reduce(
+      (sum, record) =>
+        sum + record.orders,
+      0
+    );
+
+  const monthSales =
+    monthRecords.reduce(
+      (sum, record) =>
+        sum + record.sales,
+      0
+    );
+
+  const monthOrders =
+    monthRecords.reduce(
+      (sum, record) =>
+        sum + record.orders,
+      0
+    );
+
+  const yearSales =
+    yearRecords.reduce(
+      (sum, record) =>
+        sum + record.sales,
+      0
+    );
+
+  const yearOrders =
+    yearRecords.reduce(
+      (sum, record) =>
+        sum + record.orders,
+      0
+    );
+
+  /*
+   * 月の日別集計
+   */
   const dailyMap = {};
 
   for (const record of monthRecords) {
-    const dateKey =
-      record.dateKey ||
-      (record.timestamp
-        ? dateKeyFromTimestamp(record.timestamp)
-        : "");
+    let dateKey =
+      record.dateKey;
+
+    if (!dateKey && record.timestamp) {
+      dateKey =
+        dateKeyFromTimestamp(
+          record.timestamp
+        );
+    }
 
     if (!dateKey) {
       continue;
@@ -497,69 +694,99 @@ function calculateStats(records, chatId, now) {
       };
     }
 
-    dailyMap[dateKey].sales += record.sales;
-    dailyMap[dateKey].orders += record.orders;
+    dailyMap[dateKey].sales +=
+      record.sales;
+
+    dailyMap[dateKey].orders +=
+      record.orders;
   }
 
-  const workingDays = Object.keys(dailyMap).length;
+  const workingDays =
+    Object.keys(
+      dailyMap
+    ).length;
 
   let monthlyHighestSales = 0;
   let monthlyHighestOrders = 0;
 
-  for (const day of Object.values(dailyMap)) {
-    if (day.sales > monthlyHighestSales) {
-      monthlyHighestSales = day.sales;
+  for (
+    const day of Object.values(
+      dailyMap
+    )
+  ) {
+    if (
+      day.sales >
+      monthlyHighestSales
+    ) {
+      monthlyHighestSales =
+        day.sales;
     }
 
-    if (day.orders > monthlyHighestOrders) {
-      monthlyHighestOrders = day.orders;
+    if (
+      day.orders >
+      monthlyHighestOrders
+    ) {
+      monthlyHighestOrders =
+        day.orders;
     }
   }
 
   const averagePerOrder =
     monthOrders > 0
-      ? Math.round(monthSales / monthOrders)
+      ? Math.round(
+          monthSales /
+            monthOrders
+        )
       : 0;
 
   const averagePerDay =
     workingDays > 0
-      ? Math.round(monthSales / workingDays)
+      ? Math.round(
+          monthSales /
+            workingDays
+        )
       : 0;
 
-  const achievementRate = Math.floor(
-    (monthSales / 500000) * 100
-  );
+  const achievementRate =
+    Math.floor(
+      (monthSales / 500000) *
+        100
+    );
 
   return {
     todaySales,
     todayOrders,
+
     monthSales,
     monthOrders,
+
     yearSales,
     yearOrders,
+
     averagePerOrder,
     averagePerDay,
+
     achievementRate,
+
     monthlyHighestSales,
     monthlyHighestOrders,
+
     workingDays,
-    cumulativeOrders: yearOrders,
+
+    cumulativeOrders:
+      yearOrders,
   };
 }
 
-/* =========================
-   /sales
-========================= */
+/* =========================================================
+   Fixed sales template
+========================================================= */
 
-async function handleSales(chatId) {
-  const records = await getAllRecords();
-
-  const now = Date.now();
-
-  const stats = calculateStats(records, chatId, now);
-
-  const caption =
-`🏍️ 配達売上
+function buildSalesCaption(
+  stats,
+  now
+) {
+  return `🏍️ 配達売上
 💰 今日の売上　${stats.todaySales.toLocaleString("ja-JP")}円
 📦 今日の件数　${stats.todayOrders.toLocaleString("ja-JP")}件
 💵 1件あたり　${stats.averagePerOrder.toLocaleString("ja-JP")}円
@@ -576,71 +803,187 @@ async function handleSales(chatId) {
 🛵 累計配達件数　${stats.cumulativeOrders.toLocaleString("ja-JP")}件
 🕐 ${formatJstDate(now)}
 🛵 今日も配達お疲れ様でした！`;
+}
+
+/* =========================================================
+   /sales
+========================================================= */
+
+async function handleSales(
+  chatId,
+  args
+) {
+  /*
+   * /sales 17014 17
+   *
+   * 引数がある場合：
+   * 売上実績を登録してから表示
+   */
+
+  if (args.length > 0) {
+    if (args.length !== 2) {
+      await sendMessage(
+        chatId,
+        "⚠️ 入力形式が違います。\n\n例：\n/sales 17014 17"
+      );
+
+      return;
+    }
+
+    const sales =
+      numberValue(
+        String(args[0]).replace(
+          /,/g,
+          ""
+        )
+      );
+
+    const orders =
+      numberValue(
+        String(args[1]).replace(
+          /,/g,
+          ""
+        )
+      );
+
+    if (
+      sales <= 0 ||
+      orders <= 0
+    ) {
+      await sendMessage(
+        chatId,
+        "⚠️ 売上と件数は1以上の数字で入力してください。\n\n例：\n/sales 17014 17"
+      );
+
+      return;
+    }
+
+    await createSalesRecord(
+      chatId,
+      sales,
+      orders
+    );
+  }
+
+  /*
+   * 登録後、必ず最新データを再取得。
+   * これが重要。
+   */
+
+  const records =
+    await getAllRecords();
+
+  const now = Date.now();
+
+  const stats =
+    calculateStats(
+      records,
+      chatId,
+      now
+    );
+
+  const caption =
+    buildSalesCaption(
+      stats,
+      now
+    );
 
   await sendPhoto(
     chatId,
-    "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/refs/heads/main/D261A432-2C27-4ADD-900E-E6BE35B57595.png",
+    SALES_IMAGE,
     caption
   );
 }
 
-/* =========================
+/* =========================================================
    /cancel
-========================= */
+========================================================= */
 
-async function cancelRecord(record) {
-  const key = record.key;
+async function cancelRecord(
+  record
+) {
+  const key =
+    record.key;
 
-  const type = await redisType(key);
+  const type =
+    await redisType(key);
 
   if (type === "hash") {
-    await redisHSet(key, "cancelled", "1");
-    await redisHSet(key, "status", "cancelled");
+    await redisHSet(
+      key,
+      "cancelled",
+      "1",
+      "status",
+      "cancelled"
+    );
+
     return;
   }
 
   if (type === "string") {
-    const value = await redisGet(key);
+    const value =
+      await redisGet(key);
 
     if (!value) {
-      throw new Error("Record not found");
+      throw new Error(
+        "Record not found"
+      );
     }
 
     let parsed;
 
     try {
-      parsed = JSON.parse(value);
+      parsed =
+        JSON.parse(value);
     } catch {
-      throw new Error("Invalid record JSON");
+      throw new Error(
+        "Invalid record JSON"
+      );
     }
 
     parsed.cancelled = true;
     parsed.status = "cancelled";
 
-    await redisSet(key, JSON.stringify(parsed));
+    await redisSet(
+      key,
+      JSON.stringify(parsed)
+    );
+
     return;
   }
 
-  throw new Error("Unsupported record type");
+  throw new Error(
+    "Unsupported record type"
+  );
 }
 
-async function handleCancel(chatId) {
-  const records = await getAllRecords();
+async function handleCancel(
+  chatId
+) {
+  const records =
+    await getAllRecords();
 
-  const candidates = records
-    .filter(
-      (record) =>
-        String(record.chatId ?? "") === String(chatId)
-    )
-    .filter((record) => !isCancelled(record))
-    .sort((a, b) => {
-      return (
-        (b.timestamp || 0) -
-        (a.timestamp || 0)
+  const candidates =
+    records
+      .filter(
+        (record) =>
+          String(
+            record.chatId ?? ""
+          ) === String(chatId)
+      )
+      .filter(
+        (record) =>
+          !isCancelled(record)
+      )
+      .sort(
+        (a, b) =>
+          (b.timestamp || 0) -
+          (a.timestamp || 0)
       );
-    });
 
-  if (candidates.length === 0) {
+  if (
+    candidates.length === 0
+  ) {
     await sendMessage(
       chatId,
       "⚠️ 取消できる実績がありません。"
@@ -649,9 +992,12 @@ async function handleCancel(chatId) {
     return;
   }
 
-  const target = candidates[0];
+  const target =
+    candidates[0];
 
-  await cancelRecord(target);
+  await cancelRecord(
+    target
+  );
 
   await sendMessage(
     chatId,
@@ -659,27 +1005,38 @@ async function handleCancel(chatId) {
   );
 }
 
-/* =========================
+/* =========================================================
    /reset
-========================= */
+========================================================= */
 
-async function handleReset(chatId) {
-  const records = await getAllRecords();
+async function handleReset(
+  chatId
+) {
+  const records =
+    await getAllRecords();
 
-  const ownRecords = records.filter(
-    (record) =>
-      String(record.chatId ?? "") === String(chatId)
-  );
+  const ownRecords =
+    records.filter(
+      (record) =>
+        String(
+          record.chatId ?? ""
+        ) === String(chatId)
+    );
 
   let deleted = 0;
 
-  for (const record of ownRecords) {
+  for (
+    const record of ownRecords
+  ) {
     try {
-      await redisDel(record.key);
+      await redisDel(
+        record.key
+      );
+
       deleted++;
     } catch (error) {
       console.error(
-        "Failed to delete record:",
+        "Failed to delete:",
         record.key,
         error
       );
@@ -692,31 +1049,46 @@ async function handleReset(chatId) {
   );
 }
 
-/* =========================
+/* =========================================================
    Command parser
-========================= */
+========================================================= */
 
-function getCommand(text) {
-  if (!text) {
-    return "";
+function parseCommand(text) {
+  const trimmed =
+    String(text || "").trim();
+
+  if (!trimmed) {
+    return {
+      command: "",
+      args: [],
+    };
   }
 
-  const firstLine = String(text)
-    .trim()
-    .split(/\s+/)[0];
+  const parts =
+    trimmed.split(/\s+/);
 
-  const command = firstLine
-    .split("@")[0]
-    .toLowerCase();
+  const command =
+    String(parts[0])
+      .split("@")[0]
+      .toLowerCase();
 
-  return command;
+  const args =
+    parts.slice(1);
+
+  return {
+    command,
+    args,
+  };
 }
 
-/* =========================
+/* =========================================================
    Main handler
-========================= */
+========================================================= */
 
-export default async function handler(req, res) {
+export default async function handler(
+  req,
+  res
+) {
   if (req.method !== "POST") {
     return res.status(200).json({
       ok: true,
@@ -726,9 +1098,11 @@ export default async function handler(req, res) {
   try {
     assertEnv();
 
-    const update = req.body;
+    const update =
+      req.body;
 
-    const message = update?.message;
+    const message =
+      update?.message;
 
     if (!message) {
       return res.status(200).json({
@@ -736,7 +1110,8 @@ export default async function handler(req, res) {
       });
     }
 
-    const chatId = message.chat?.id;
+    const chatId =
+      message.chat?.id;
 
     if (!chatId) {
       return res.status(200).json({
@@ -744,26 +1119,55 @@ export default async function handler(req, res) {
       });
     }
 
-    const text = message.text || "";
+    const text =
+      message.text || "";
 
-    const command = getCommand(text);
+    const {
+      command,
+      args,
+    } = parseCommand(text);
 
     if (command === "/sales") {
-      await handleSales(chatId);
-    } else if (command === "/cancel") {
-      await handleCancel(chatId);
-    } else if (command === "/reset") {
-      await handleReset(chatId);
+      await handleSales(
+        chatId,
+        args
+      );
     }
+
+    else if (
+      command === "/cancel"
+    ) {
+      await handleCancel(
+        chatId
+      );
+    }
+
+    else if (
+      command === "/reset"
+    ) {
+      await handleReset(
+        chatId
+      );
+    }
+
+    /*
+     * /record は意図的に存在しない。
+     */
 
     return res.status(200).json({
       ok: true,
     });
-  } catch (error) {
-    console.error("Telegram handler error:", error);
+  }
+
+  catch (error) {
+    console.error(
+      "Telegram handler error:",
+      error
+    );
 
     try {
-      const chatId = req.body?.message?.chat?.id;
+      const chatId =
+        req.body?.message?.chat?.id;
 
       if (chatId) {
         await sendMessage(
@@ -773,7 +1177,7 @@ export default async function handler(req, res) {
       }
     } catch (telegramError) {
       console.error(
-        "Failed to send error message:",
+        "Failed to send error:",
         telegramError
       );
     }
