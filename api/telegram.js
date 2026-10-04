@@ -11,7 +11,7 @@ import {
 
 
 /* =========================================================
-   Environment
+   ENV
 ========================================================= */
 
 const TELEGRAM_BOT_TOKEN =
@@ -21,14 +21,16 @@ const TELEGRAM_WEBHOOK_SECRET =
   process.env.TELEGRAM_WEBHOOK_SECRET;
 
 const TELEGRAM_ALLOWED_CHAT_IDS =
-  process.env.TELEGRAM_ALLOWED_CHAT_IDS || "";
+  process.env.TELEGRAM_ALLOWED_CHAT_IDS ||
+  "";
 
 const TELEGRAM_ALLOWED_USER_IDS =
-  process.env.TELEGRAM_ALLOWED_USER_IDS || "";
+  process.env.TELEGRAM_ALLOWED_USER_IDS ||
+  "";
 
 
 /* =========================================================
-   Image
+   IMAGE
 ========================================================= */
 
 const PHOTO_URL =
@@ -36,8 +38,11 @@ const PHOTO_URL =
 
 
 /* =========================================================
-   Limits
+   LIMIT
 ========================================================= */
+
+const MAX_UPDATE_BYTES =
+  20000;
 
 const TEXT_LIMIT =
   3500;
@@ -45,45 +50,32 @@ const TEXT_LIMIT =
 const CAPTION_LIMIT =
   900;
 
-const MAX_UPDATE_BYTES =
-  20000;
-
 
 /* =========================================================
-   Environment validation
+   ENV CHECK
 ========================================================= */
 
 function requireEnvironment() {
-  const missing = [];
-
   if (
     !TELEGRAM_BOT_TOKEN
   ) {
-    missing.push(
-      "TELEGRAM_BOT_TOKEN"
+    throw new Error(
+      "TELEGRAM_BOT_TOKEN is missing."
     );
   }
 
   if (
     !TELEGRAM_WEBHOOK_SECRET
   ) {
-    missing.push(
-      "TELEGRAM_WEBHOOK_SECRET"
-    );
-  }
-
-  if (
-    missing.length > 0
-  ) {
     throw new Error(
-      `Missing environment variables: ${missing.join(", ")}`
+      "TELEGRAM_WEBHOOK_SECRET is missing."
     );
   }
 }
 
 
 /* =========================================================
-   Allowed IDs
+   ALLOWLIST
 ========================================================= */
 
 function parseIdList(
@@ -93,8 +85,8 @@ function parseIdList(
     String(value)
       .split(",")
       .map(
-        item =>
-          item.trim()
+        value =>
+          value.trim()
       )
       .filter(
         Boolean
@@ -134,11 +126,6 @@ function isAllowed(
       : null;
 
 
-  /*
-    Chat allowlistが設定されている場合
-    chat IDを必ず確認。
-  */
-
   if (
     allowedChatIds.size > 0 &&
     !allowedChatIds.has(
@@ -148,11 +135,6 @@ function isAllowed(
     return false;
   }
 
-
-  /*
-    User allowlistが設定されている場合
-    user IDを必ず確認。
-  */
 
   if (
     allowedUserIds.size > 0 &&
@@ -171,7 +153,7 @@ function isAllowed(
 
 
 /* =========================================================
-   Constant-time compare
+   SECRET COMPARE
 ========================================================= */
 
 function secureEqual(
@@ -213,10 +195,6 @@ function secureEqual(
 }
 
 
-/* =========================================================
-   Webhook secret
-========================================================= */
-
 function verifyWebhookSecret(
   req
 ) {
@@ -235,7 +213,7 @@ function verifyWebhookSecret(
 
 
 /* =========================================================
-   Telegram API
+   TELEGRAM API
 ========================================================= */
 
 async function telegramRequest(
@@ -283,7 +261,7 @@ async function telegramRequest(
 
 
 /* =========================================================
-   Send message
+   SEND MESSAGE
 ========================================================= */
 
 async function sendMessage(
@@ -297,9 +275,9 @@ async function sendMessage(
   }
 
   for (
-    let offset = 0;
-    offset < text.length;
-    offset += TEXT_LIMIT
+    let i = 0;
+    i < text.length;
+    i += TEXT_LIMIT
   ) {
     await telegramRequest(
       "sendMessage",
@@ -309,8 +287,8 @@ async function sendMessage(
 
         text:
           text.slice(
-            offset,
-            offset +
+            i,
+            i +
               TEXT_LIMIT
           ),
       }
@@ -320,17 +298,13 @@ async function sendMessage(
 
 
 /* =========================================================
-   Send photo
+   SEND PHOTO
 ========================================================= */
 
 async function sendPhoto(
   chatId,
   text
 ) {
-  /*
-    画像＋本文をcaptionで送れる場合
-  */
-
   if (
     text.length <=
     CAPTION_LIMIT
@@ -352,12 +326,6 @@ async function sendPhoto(
     return;
   }
 
-
-  /*
-    captionが長い場合は
-    画像と本文を分離。
-  */
-
   await telegramRequest(
     "sendPhoto",
     {
@@ -377,7 +345,7 @@ async function sendPhoto(
 
 
 /* =========================================================
-   Update validation
+   UPDATE VALIDATION
 ========================================================= */
 
 function validateUpdate(
@@ -406,57 +374,36 @@ function validateUpdate(
   const message =
     update.message;
 
-  /*
-    message以外のTelegram updateは
-    このBotでは処理しない。
-  */
-
   if (
-    !message ||
-    typeof message !==
-      "object"
+    !message
   ) {
     return null;
   }
 
   if (
     !message.chat ||
-    typeof message.chat !==
-      "object"
-  ) {
-    throw new Error(
-      "Invalid message.chat."
-    );
-  }
-
-  if (
     !Number.isSafeInteger(
       message.chat.id
     )
   ) {
     throw new Error(
-      "Invalid message.chat.id."
+      "Invalid chat."
     );
   }
 
   if (
-    message.text !==
-      undefined &&
     typeof message.text !==
       "string"
   ) {
-    throw new Error(
-      "Invalid message.text."
-    );
+    return null;
   }
 
   if (
-    message.text &&
     message.text.length >
-      4096
+    4096
   ) {
     throw new Error(
-      "Message is too long."
+      "Message too long."
     );
   }
 
@@ -465,10 +412,10 @@ function validateUpdate(
 
 
 /* =========================================================
-   Command parser
+   COMMAND
 ========================================================= */
 
-function parseCommand(
+function getCommand(
   text
 ) {
   const match =
@@ -484,23 +431,23 @@ function parseCommand(
     match[1].toLowerCase();
 
   /*
-    この3つ以外はコマンドとして認識しない。
+    コマンドは3つだけ。
   */
 
   if (
-    command !== "sales" &&
-    command !== "cancel" &&
-    command !== "record"
+    command === "sales" ||
+    command === "cancel" ||
+    command === "record"
   ) {
-    return null;
+    return command;
   }
 
-  return command;
+  return null;
 }
 
 
 /* =========================================================
-   Sales parser
+   SALES INPUT
 ========================================================= */
 
 function parseSales(
@@ -514,25 +461,27 @@ function parseSales(
       )
       .trim();
 
-  const match =
-    body.match(
-      /^(\d+)\s+(\d+)$/
+  const parts =
+    body.split(
+      /\s+/
     );
 
-  if (!match) {
+  if (
+    parts.length !== 2
+  ) {
     throw new Error(
-      "入力形式: /sales 売上 件数"
+      "入力形式：/sales 売上 件数"
     );
   }
 
   const sales =
     Number(
-      match[1]
+      parts[0]
     );
 
   const orders =
     Number(
-      match[2]
+      parts[1]
     );
 
   if (
@@ -549,18 +498,11 @@ function parseSales(
   }
 
   if (
-    sales <= 0
-  ) {
-    throw new Error(
-      "売上は1以上で入力してください。"
-    );
-  }
-
-  if (
+    sales <= 0 ||
     orders <= 0
   ) {
     throw new Error(
-      "件数は1以上で入力してください。"
+      "売上と件数は1以上で入力してください。"
     );
   }
 
@@ -572,7 +514,7 @@ function parseSales(
 
 
 /* =========================================================
-   Operation ID
+   OPERATION ID
 ========================================================= */
 
 function createSaleOperationId(
@@ -610,46 +552,44 @@ function createCancelOperationId(
 
 
 /* =========================================================
-   Body size
+   BODY SIZE
 ========================================================= */
 
-function bodySize(
+function getBodySize(
   body
 ) {
-  try {
-    return Buffer.byteLength(
-      JSON.stringify(
-        body
-      ),
-      "utf8"
-    );
-  } catch {
-    return Infinity;
-  }
+  return Buffer.byteLength(
+    JSON.stringify(
+      body || {}
+    ),
+    "utf8"
+  );
 }
 
 
 /* =========================================================
-   Handler
+   HANDLER
 ========================================================= */
 
 export default async function handler(
   req,
   res
 ) {
+  /*
+    GETはWebhook確認用。
+    コマンドではありません。
+  */
+
   if (
     req.method ===
     "GET"
   ) {
-    return res.status(
-      200
-    ).json({
-      ok:
-        true,
-
-      service:
-        "moheji-telegram-webhook",
-    });
+    return res
+      .status(200)
+      .json({
+        ok:
+          true,
+      });
   }
 
 
@@ -657,65 +597,65 @@ export default async function handler(
     req.method !==
     "POST"
   ) {
-    return res.status(
-      405
-    ).json({
-      ok:
-        false,
+    return res
+      .status(405)
+      .json({
+        ok:
+          false,
 
-      error:
-        "Method Not Allowed",
-    });
+        error:
+          "Method Not Allowed",
+      });
   }
 
 
   try {
-    /*
-      Webhook secret
-    */
+    /* -----------------------------------------------
+       Secret
+    ----------------------------------------------- */
 
     if (
       !verifyWebhookSecret(
         req
       )
     ) {
-      return res.status(
-        401
-      ).json({
-        ok:
-          false,
+      return res
+        .status(401)
+        .json({
+          ok:
+            false,
 
-        error:
-          "Unauthorized",
-      });
+          error:
+            "Unauthorized",
+        });
     }
 
 
-    /*
-      Body size
-    */
+    /* -----------------------------------------------
+       Body
+    ----------------------------------------------- */
 
     if (
-      bodySize(
+      getBodySize(
         req.body
       ) >
       MAX_UPDATE_BYTES
     ) {
-      return res.status(
-        413
-      ).json({
-        ok:
-          false,
+      return res
+        .status(413)
+        .json({
+          ok:
+            false,
 
-        error:
-          "Payload too large",
-      });
+          error:
+            "Payload too large",
+        });
     }
 
 
-    /*
-      Validate Telegram update
-    */
+    /* -----------------------------------------------
+       Telegram update
+    ----------------------------------------------- */
 
     const message =
       validateUpdate(
@@ -723,87 +663,53 @@ export default async function handler(
       );
 
     if (!message) {
-      return res.status(
-        200
-      ).json({
-        ok:
-          true,
-
-        ignored:
-          true,
-      });
+      return res
+        .status(200)
+        .send("OK");
     }
 
 
-    /*
-      Allowlist
-    */
+    /* -----------------------------------------------
+       Allowlist
+    ----------------------------------------------- */
 
     if (
       !isAllowed(
         message
       )
     ) {
-      return res.status(
-        200
-      ).json({
-        ok:
-          true,
-
-        ignored:
-          true,
-      });
+      return res
+        .status(200)
+        .send("OK");
     }
 
+
+    const text =
+      message.text.trim();
 
     const chatId =
       message.chat.id;
 
-    const text =
-      String(
-        message.text || ""
-      ).trim();
-
-
-    if (!text) {
-      return res.status(
-        200
-      ).json({
-        ok:
-          true,
-
-        ignored:
-          true,
-      });
-    }
-
-
     const command =
-      parseCommand(
+      getCommand(
         text
       );
 
 
     /*
-      3コマンド以外は何もしない。
+      3コマンド以外は完全に無視。
     */
 
     if (!command) {
-      return res.status(
-        200
-      ).json({
-        ok:
-          true,
-
-        ignored:
-          true,
-      });
+      return res
+        .status(200)
+        .send("OK");
     }
 
 
-    /* =====================================================
+    /* =================================================
        /sales
-    ===================================================== */
+    ================================================= */
 
     if (
       command ===
@@ -830,11 +736,6 @@ export default async function handler(
           operationId,
         });
 
-        /*
-          売上登録後、
-          画像付き現在集計を表示。
-        */
-
         const report =
           await buildReport();
 
@@ -843,22 +744,14 @@ export default async function handler(
           report
         );
 
-        return res.status(
-          200
-        ).json({
-          ok:
-            true,
-
-          command:
-            "sales",
-
-          operationId,
-        });
+        return res
+          .status(200)
+          .send("OK");
       } catch (
         error
       ) {
         console.error(
-          "sales error:",
+          "SALES ERROR:",
           error
         );
 
@@ -868,33 +761,24 @@ export default async function handler(
             `⚠️ ${error.message}`
           );
         } catch (
-          notifyError
+          sendError
         ) {
           console.error(
-            "sales notify error:",
-            notifyError
+            "SALES SEND ERROR:",
+            sendError
           );
         }
 
-        return res.status(
-          200
-        ).json({
-          ok:
-            false,
-
-          command:
-            "sales",
-
-          error:
-            error.message,
-        });
+        return res
+          .status(200)
+          .send("OK");
       }
     }
 
 
-    /* =====================================================
+    /* =================================================
        /cancel
-    ===================================================== */
+    ================================================= */
 
     if (
       command ===
@@ -911,10 +795,6 @@ export default async function handler(
           operationId,
         });
 
-        /*
-          取消後も現在集計を表示。
-        */
-
         const report =
           await buildReport();
 
@@ -923,22 +803,14 @@ export default async function handler(
           report
         );
 
-        return res.status(
-          200
-        ).json({
-          ok:
-            true,
-
-          command:
-            "cancel",
-
-          operationId,
-        });
+        return res
+          .status(200)
+          .send("OK");
       } catch (
         error
       ) {
         console.error(
-          "cancel error:",
+          "CANCEL ERROR:",
           error
         );
 
@@ -948,31 +820,24 @@ export default async function handler(
             `⚠️ ${error.message}`
           );
         } catch (
-          notifyError
+          sendError
         ) {
           console.error(
-            "cancel notify error:",
-            notifyError
+            "CANCEL SEND ERROR:",
+            sendError
           );
         }
 
-        return res.status(
-          200
-        ).json({
-          ok:
-            false,
-
-          command:
-            "cancel",
-
-          error:
-            error.message,
-        });
+        return res
+          .status(200)
+          .send("OK");
       }
     }
-        /* =====================================================
+
+
+    /* =================================================
        /record
-    ===================================================== */
+    ================================================= */
 
     if (
       command ===
@@ -987,20 +852,14 @@ export default async function handler(
           report
         );
 
-        return res.status(
-          200
-        ).json({
-          ok:
-            true,
-
-          command:
-            "record",
-        });
+        return res
+          .status(200)
+          .send("OK");
       } catch (
         error
       ) {
         console.error(
-          "record error:",
+          "RECORD ERROR:",
           error
         );
 
@@ -1010,65 +869,45 @@ export default async function handler(
             `⚠️ ${error.message}`
           );
         } catch (
-          notifyError
+          sendError
         ) {
           console.error(
-            "record notify error:",
-            notifyError
+            "RECORD SEND ERROR:",
+            sendError
           );
         }
 
-        return res.status(
-          200
-        ).json({
-          ok:
-            false,
-
-          command:
-            "record",
-
-          error:
-            error.message,
-        });
+        return res
+          .status(200)
+          .send("OK");
       }
     }
 
 
     /*
-      ここには到達しない想定。
-      3コマンド以外はparseCommandで除外。
+      ここには通常来ない。
+      コマンドは上の3つだけ。
     */
 
-    return res.status(
-      200
-    ).json({
-      ok:
-        true,
+    return res
+      .status(200)
+      .send("OK");
 
-      ignored:
-        true,
-    });
   } catch (
     error
   ) {
     console.error(
-      "telegram webhook error:",
+      "TELEGRAM WEBHOOK ERROR:",
       error
     );
 
     /*
-      Telegramに401/500を返して
-      無限リトライさせない。
+      TelegramへのWebhook応答は
+      200にして無限リトライを防止。
     */
 
-    return res.status(
-      200
-    ).json({
-      ok:
-        false,
-
-      error:
-        "Internal processing error",
-    });
+    return res
+      .status(200)
+      .send("OK");
   }
 }
