@@ -7,11 +7,10 @@ import {
   cancelLatestSale,
   buildReport,
   buildRecordReport,
-  runLegacyMigration,
   yen,
   integer,
+  runLegacyMigration,
 } from "./sales.js";
-
 
 /* =========================================================
    Environment
@@ -23,9 +22,14 @@ const TELEGRAM_BOT_TOKEN =
 const TELEGRAM_WEBHOOK_SECRET =
   process.env.TELEGRAM_WEBHOOK_SECRET;
 
+const TELEGRAM_ALLOWED_CHAT_IDS =
+  process.env.TELEGRAM_ALLOWED_CHAT_IDS || "";
+
+const TELEGRAM_ALLOWED_USER_IDS =
+  process.env.TELEGRAM_ALLOWED_USER_IDS || "";
+
 const PHOTO_URL =
   "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/main/D261A432-2C27-4ADD-900E-E6BE35B57595.png";
-
 
 /* =========================================================
    Constants
@@ -34,7 +38,6 @@ const PHOTO_URL =
 const TEXT_LIMIT = 3500;
 const CAPTION_LIMIT = 900;
 const MAX_UPDATE_BYTES = 20000;
-
 
 /* =========================================================
    Environment validation
@@ -58,12 +61,90 @@ function requireEnvironment() {
   }
 }
 
+/* =========================================================
+   Allowed ID parser
+========================================================= */
+
+function parseAllowedIds(value) {
+  if (!value) {
+    return new Set();
+  }
+
+  return new Set(
+    value
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean)
+  );
+}
+
+/* =========================================================
+   Access control
+========================================================= */
+
+function isAllowedAccess(chatId, userId) {
+  const allowedChats =
+    parseAllowedIds(
+      TELEGRAM_ALLOWED_CHAT_IDS
+    );
+
+  const allowedUsers =
+    parseAllowedIds(
+      TELEGRAM_ALLOWED_USER_IDS
+    );
+
+  const chatConfigured =
+    allowedChats.size > 0;
+
+  const userConfigured =
+    allowedUsers.size > 0;
+
+  /*
+    If no allow-list is configured,
+    do not block.
+  */
+
+  if (
+    !chatConfigured &&
+    !userConfigured
+  ) {
+    return true;
+  }
+
+  const chatAllowed =
+    chatConfigured &&
+    allowedChats.has(
+      String(chatId)
+    );
+
+  const userAllowed =
+    userConfigured &&
+    allowedUsers.has(
+      String(userId)
+    );
+
+  /*
+    Either configured allow-list can authorize.
+  */
+
+  if (
+    chatAllowed ||
+    userAllowed
+  ) {
+    return true;
+  }
+
+  return false;
+}
 
 /* =========================================================
    Constant-time comparison
 ========================================================= */
 
-function secureEqual(actual, expected) {
+function secureEqual(
+  actual,
+  expected
+) {
   if (
     typeof actual !== "string" ||
     typeof expected !== "string"
@@ -71,19 +152,26 @@ function secureEqual(actual, expected) {
     return false;
   }
 
-  const a = Buffer.from(actual, "utf8");
-  const b = Buffer.from(expected, "utf8");
+  const a =
+    Buffer.from(actual);
 
-  if (a.length !== b.length) {
+  const b =
+    Buffer.from(expected);
+
+  if (
+    a.length !== b.length
+  ) {
     return false;
   }
 
-  return crypto.timingSafeEqual(a, b);
+  return crypto.timingSafeEqual(
+    a,
+    b
+  );
 }
 
-
 /* =========================================================
-   Telegram webhook verification
+   Webhook verification
 ========================================================= */
 
 function verifyWebhookSecret(req) {
@@ -100,38 +188,37 @@ function verifyWebhookSecret(req) {
   );
 }
 
-
 /* =========================================================
    Telegram API
 ========================================================= */
 
-async function telegramRequest(method, payload) {
+async function telegramRequest(
+  method,
+  payload
+) {
   requireEnvironment();
 
   const url =
     `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`;
 
-  const response = await fetch(url, {
-    method: "POST",
+  const response =
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type":
+          "application/json",
+      },
+      body:
+        JSON.stringify(payload),
+    });
 
-    headers: {
-      "Content-Type": "application/json",
-    },
+  const data =
+    await response.json();
 
-    body: JSON.stringify(payload),
-  });
-
-  let data;
-
-  try {
-    data = await response.json();
-  } catch {
-    throw new Error(
-      `Telegram returned invalid JSON. HTTP ${response.status}`
-    );
-  }
-
-  if (!response.ok || !data.ok) {
+  if (
+    !response.ok ||
+    !data.ok
+  ) {
     throw new Error(
       `Telegram API error: ${response.status} ${JSON.stringify(data)}`
     );
@@ -140,45 +227,46 @@ async function telegramRequest(method, payload) {
   return data.result;
 }
 
-
 /* =========================================================
    Text sender
 ========================================================= */
 
-async function sendMessage(chatId, text) {
-  const value = String(text ?? "");
-
-  if (!value) {
+async function sendMessage(
+  chatId,
+  text
+) {
+  if (!text) {
     return;
   }
 
   for (
     let i = 0;
-    i < value.length;
+    i < text.length;
     i += TEXT_LIMIT
   ) {
     await telegramRequest(
       "sendMessage",
       {
         chat_id: chatId,
-        text: value.slice(
-          i,
-          i + TEXT_LIMIT
-        ),
+        text:
+          text.slice(
+            i,
+            i + TEXT_LIMIT
+          ),
       }
     );
   }
 }
-
 
 /* =========================================================
    Photo sender
 ========================================================= */
 
-async function sendPhoto(chatId, caption = "") {
-  const value = String(caption ?? "");
-
-  if (!value) {
+async function sendPhoto(
+  chatId,
+  caption
+) {
+  if (!caption) {
     return telegramRequest(
       "sendPhoto",
       {
@@ -189,49 +277,55 @@ async function sendPhoto(chatId, caption = "") {
   }
 
   /*
-   * Telegram caption limit protection.
-   */
-  if (value.length <= CAPTION_LIMIT) {
+    Telegram caption limit.
+  */
+
+  if (
+    caption.length <=
+    CAPTION_LIMIT
+  ) {
     return telegramRequest(
       "sendPhoto",
       {
         chat_id: chatId,
         photo: PHOTO_URL,
-        caption: value,
+        caption,
       }
     );
   }
 
   /*
-   * Long content:
-   * send image with short caption,
-   * then send the complete text separately.
-   */
+    Long text:
+    image first,
+    report afterwards as messages.
+  */
+
   await telegramRequest(
     "sendPhoto",
     {
       chat_id: chatId,
       photo: PHOTO_URL,
-      caption: "📊 売上レポート",
+      caption:
+        "📊 売上レポート",
     }
   );
 
   await sendMessage(
     chatId,
-    value
+    caption
   );
 }
-
 
 /* =========================================================
    Update validation
 ========================================================= */
 
-function validateUpdate(update) {
+function validateUpdate(
+  update
+) {
   if (
     !update ||
-    typeof update !== "object" ||
-    Array.isArray(update)
+    typeof update !== "object"
   ) {
     throw new Error(
       "Invalid Telegram update."
@@ -248,20 +342,22 @@ function validateUpdate(update) {
     );
   }
 
-  const message = update.message;
+  const message =
+    update.message;
 
   /*
-   * We only process ordinary messages.
-   */
+    Telegram may send non-message updates.
+  */
+
   if (
     !message ||
-    typeof message !== "object" ||
-    Array.isArray(message)
+    typeof message !== "object"
   ) {
     return null;
   }
 
-  const chat = message.chat;
+  const chat =
+    message.chat;
 
   if (
     !chat ||
@@ -273,10 +369,27 @@ function validateUpdate(update) {
   }
 
   if (
-    !Number.isSafeInteger(chat.id)
+    !Number.isSafeInteger(
+      chat.id
+    )
   ) {
     throw new Error(
       "Invalid chat.id."
+    );
+  }
+
+  const from =
+    message.from;
+
+  if (
+    from &&
+    typeof from === "object" &&
+    !Number.isSafeInteger(
+      from.id
+    )
+  ) {
+    throw new Error(
+      "Invalid message.from.id."
     );
   }
 
@@ -303,12 +416,13 @@ function validateUpdate(update) {
   return message;
 }
 
-
 /* =========================================================
    Command parser
 ========================================================= */
 
-function commandName(text) {
+function commandName(
+  text
+) {
   const match =
     text.match(
       /^\/([a-zA-Z0-9_]+)(?:@\w+)?(?:\s|$)/
@@ -319,12 +433,13 @@ function commandName(text) {
     : null;
 }
 
-
 /* =========================================================
    /sales parser
 ========================================================= */
 
-function parseSales(text) {
+function parseSales(
+  text
+) {
   const body =
     text
       .replace(
@@ -335,7 +450,7 @@ function parseSales(text) {
 
   const values =
     body.match(
-      /^(\d+)\s+(\d+)$/
+      /^\s*(\d+)\s+(\d+)\s*$/
     );
 
   if (!values) {
@@ -356,13 +471,40 @@ function parseSales(text) {
     Number(values[2]);
 
   if (
-    !Number.isSafeInteger(sales) ||
-    !Number.isSafeInteger(orders) ||
-    sales <= 0 ||
-    orders <= 0
+    !Number.isSafeInteger(
+      sales
+    ) ||
+    !Number.isSafeInteger(
+      orders
+    )
   ) {
     throw new Error(
-      "売上と件数は1以上の整数で入力してください。"
+      "売上と件数は整数で入力してください。"
+    );
+  }
+
+  if (
+    sales < 0
+  ) {
+    throw new Error(
+      "売上は0以上で入力してください。"
+    );
+  }
+
+  if (
+    orders < 0
+  ) {
+    throw new Error(
+      "件数は0以上で入力してください。"
+    );
+  }
+
+  if (
+    sales === 0 &&
+    orders === 0
+  ) {
+    throw new Error(
+      "売上または件数を入力してください。"
     );
   }
 
@@ -371,7 +513,6 @@ function parseSales(text) {
     orders,
   };
 }
-
 
 /* =========================================================
    Help
@@ -403,20 +544,15 @@ function helpText() {
   ].join("\n");
 }
 
-
 /* =========================================================
-   Sale result formatter
+   Sale result
 ========================================================= */
 
-function formatSaleResult(result) {
+function formatSaleResult(
+  result
+) {
   const record =
-    result?.record;
-
-  if (!record) {
-    throw new Error(
-      "Invalid sale result."
-    );
-  }
+    result.record;
 
   return [
     "✅ 売上を登録しました。",
@@ -430,20 +566,15 @@ function formatSaleResult(result) {
   ].join("\n");
 }
 
-
 /* =========================================================
-   Cancel result formatter
+   Cancel result
 ========================================================= */
 
-function formatCancelResult(result) {
+function formatCancelResult(
+  result
+) {
   const record =
-    result?.record;
-
-  if (!record) {
-    throw new Error(
-      "Invalid cancel result."
-    );
-  }
+    result.record;
 
   return [
     "↩️ 売上を取り消しました。",
@@ -457,103 +588,54 @@ function formatCancelResult(result) {
   ].join("\n");
 }
 
-
 /* =========================================================
    Report formatter
 ========================================================= */
 
-function formatReport(report) {
-  if (
-    !report ||
-    typeof report !== "object"
-  ) {
-    throw new Error(
-      "Invalid report."
-    );
-  }
-
-  const today =
-    report.today || {};
-
-  const month =
-    report.month || {};
-
-  const year =
-    report.year || {};
-
-  const allTime =
-    report.allTime || {};
+function formatReport(
+  report
+) {
+  const progress =
+    report.dailyProgressBar ||
+    "🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢";
 
   return [
-    "📊 売上レポート",
+    "🏍配達売上",
     "",
-    `📅 今日: ${report.dateKey}`,
-    `💰 今日売上: ${yen(today.sales)}`,
-    `📦 今日件数: ${integer(today.orders)}件`,
+    `💰 今日の売上 ${yen(report.today.sales)}`,
+    progress,
+    `📦 今日の件数 ${integer(report.today.orders)}件`,
+    `💵 1件あたり ${yen(report.today.averageOrderValue)}`,
     "",
-    `📅 今月: ${report.monthKey}`,
-    `💰 今月売上: ${yen(month.sales)}`,
-    `📦 今月件数: ${integer(month.orders)}件`,
-    `🗓 稼働日数: ${integer(report.workingDays)}日`,
-    `📈 1日平均: ${yen(report.dailyAverage)}`,
-    `🧾 平均客単価: ${yen(report.averageOrderValue)}`,
+    `📅 今月売上 ${yen(report.month.sales)}`,
+    `📦 今月件数 ${integer(report.month.orders)}件`,
     "",
-    `🎯 月間目標: ${yen(report.monthlyTarget)}`,
-    `📊 達成率: ${Number(report.achievementRate || 0).toFixed(1)}%`,
-    `🔥 残り: ${yen(report.remaining)}`,
+    `🗓️ 年間売上 ${yen(report.year.sales)}`,
+    `📦 年間件数 ${integer(report.year.orders)}件`,
     "",
-    `🏆 月間最高日売上: ${yen(report.bestDailySales)}`,
-    `📅 ${report.bestDailySalesDate || "-"}`,
-    `🏆 月間最高日件数: ${integer(report.bestDailyOrders)}件`,
-    `📅 ${report.bestDailyOrdersDate || "-"}`,
+    `📈 平均売上／日 ${yen(report.month.averagePerDay)}`,
+    `🎯 月間目標 ${yen(report.monthlyTarget)}`,
+    `📊 目標達成率 ${report.month.achievementRate.toFixed(1)}%`,
     "",
-    `📆 今年売上: ${yen(year.sales)}`,
-    `📦 今年件数: ${integer(year.orders)}件`,
+    `🏆 月間最高売上 ${yen(report.month.bestSales)}`,
+    `🏆 月間最高件数 ${integer(report.month.bestOrders)}件`,
+    `📆 稼働日数 ${integer(report.month.workingDays)}日`,
     "",
-    `♾ 累計売上: ${yen(allTime.sales)}`,
-    `📦 累計件数: ${integer(allTime.orders)}件`,
+    `🛵 累計配達件数 ${integer(report.allTime.orders)}件`,
+    "",
+    `🕐 ${report.now}`,
+    "",
+    "🛵 今日も配達お疲れ様でした！",
   ].join("\n");
 }
 
-
 /* =========================================================
-   24-month record formatter
+   Body size
 ========================================================= */
 
-function formatRecordReport(rows) {
-  if (!Array.isArray(rows)) {
-    throw new Error(
-      "Invalid record report."
-    );
-  }
-
-  const lines = [
-    "📚 過去24か月売上",
-    "",
-  ];
-
-  for (const row of rows) {
-    lines.push(
-      `${row.monthKey}`,
-      `  💰 売上: ${yen(row.sales)}`,
-      `  📦 件数: ${integer(row.orders)}件`,
-      `  🗓 稼働: ${integer(row.workingDays)}日`,
-      `  📈 日平均: ${yen(row.dailyAverage)}`,
-      `  🏆 最高売上: ${yen(row.bestDailySales)}`,
-      `  🏆 最高件数: ${integer(row.bestDailyOrders)}件`,
-      ""
-    );
-  }
-
-  return lines.join("\n");
-}
-
-
-/* =========================================================
-   Request body size
-========================================================= */
-
-function bodySize(body) {
+function bodySize(
+  body
+) {
   try {
     return Buffer.byteLength(
       JSON.stringify(body),
@@ -564,7 +646,6 @@ function bodySize(body) {
   }
 }
 
-
 /* =========================================================
    Main handler
 ========================================================= */
@@ -574,9 +655,12 @@ export default async function handler(
   res
 ) {
   /*
-   * Health check
-   */
-  if (req.method === "GET") {
+    Health check
+  */
+
+  if (
+    req.method === "GET"
+  ) {
     return res.status(200).json({
       ok: true,
       service:
@@ -585,53 +669,63 @@ export default async function handler(
   }
 
   /*
-   * Telegram webhook = POST only
-   */
-  if (req.method !== "POST") {
+    Telegram only POST
+  */
+
+  if (
+    req.method !== "POST"
+  ) {
     return res.status(405).json({
       ok: false,
-      error: "Method Not Allowed",
+      error:
+        "Method Not Allowed",
     });
   }
 
   try {
     /*
-     * 1. Webhook secret
-     */
-    if (!verifyWebhookSecret(req)) {
+      Webhook authentication
+    */
+
+    if (
+      !verifyWebhookSecret(req)
+    ) {
       return res.status(401).json({
         ok: false,
-        error: "Unauthorized",
+        error:
+          "Unauthorized",
       });
     }
 
-    /*
-     * 2. Request body
-     */
-    const update = req.body;
+    const update =
+      req.body;
 
     /*
-     * 3. Payload size
-     */
+      Payload size defense
+    */
+
     if (
       bodySize(update) >
       MAX_UPDATE_BYTES
     ) {
       return res.status(413).json({
         ok: false,
-        error: "Payload too large",
+        error:
+          "Payload too large",
       });
     }
 
     /*
-     * 4. Validate Telegram update
-     */
+      Telegram update validation
+    */
+
     const message =
       validateUpdate(update);
 
     /*
-     * 5. Ignore non-message updates
-     */
+      Ignore non-message updates.
+    */
+
     if (!message) {
       return res.status(200).json({
         ok: true,
@@ -642,14 +736,31 @@ export default async function handler(
     const chatId =
       message.chat.id;
 
+    const userId =
+      message.from?.id;
+
+    /*
+      Access control
+    */
+
+    if (
+      !isAllowedAccess(
+        chatId,
+        userId
+      )
+    ) {
+      return res.status(403).json({
+        ok: false,
+        error:
+          "Forbidden",
+      });
+    }
+
     const text =
       String(
         message.text || ""
       ).trim();
 
-    /*
-     * 6. Ignore non-text messages
-     */
     if (!text) {
       return res.status(200).json({
         ok: true,
@@ -659,7 +770,6 @@ export default async function handler(
 
     const command =
       commandName(text);
-
 
     /* =====================================================
        START / HELP
@@ -680,28 +790,42 @@ export default async function handler(
       });
     }
 
-
     /* =====================================================
        SALES
     ===================================================== */
 
-    if (command === "sales") {
+    if (
+      command === "sales"
+    ) {
       try {
         const {
           sales,
           orders,
-        } = parseSales(text);
+        } =
+          parseSales(text);
+
+        /*
+          update_id is passed into sales.js.
+
+          This makes the same Telegram update
+          resolve to the same operationId.
+        */
 
         const result =
           await registerSale({
             chatId,
+            userId,
             sales,
             orders,
+            updateId:
+              update.update_id,
           });
 
         await sendPhoto(
           chatId,
-          formatSaleResult(result)
+          formatSaleResult(
+            result
+          )
         );
 
         return res.status(200).json({
@@ -712,11 +836,6 @@ export default async function handler(
         });
 
       } catch (error) {
-        console.error(
-          "Sales error:",
-          error
-        );
-
         await sendMessage(
           chatId,
           `⚠️ ${error.message}`
@@ -725,26 +844,33 @@ export default async function handler(
         return res.status(200).json({
           ok: false,
           command: "sales",
-          error: error.message,
+          error:
+            error.message,
         });
       }
     }
-
 
     /* =====================================================
        CANCEL
     ===================================================== */
 
-    if (command === "cancel") {
+    if (
+      command === "cancel"
+    ) {
       try {
         const result =
-          await cancelLatestSale(
-            chatId
-          );
+          await cancelLatestSale({
+            chatId,
+            userId,
+            updateId:
+              update.update_id,
+          });
 
         await sendPhoto(
           chatId,
-          formatCancelResult(result)
+          formatCancelResult(
+            result
+          )
         );
 
         return res.status(200).json({
@@ -755,11 +881,6 @@ export default async function handler(
         });
 
       } catch (error) {
-        console.error(
-          "Cancel error:",
-          error
-        );
-
         await sendMessage(
           chatId,
           `⚠️ ${error.message}`
@@ -768,27 +889,26 @@ export default async function handler(
         return res.status(200).json({
           ok: false,
           command: "cancel",
-          error: error.message,
+          error:
+            error.message,
         });
       }
     }
-
 
     /* =====================================================
        REPORT
     ===================================================== */
 
-    if (command === "report") {
+    if (
+      command === "report"
+    ) {
       try {
         const report =
           await buildReport();
 
-        const textReport =
-          formatReport(report);
-
         await sendPhoto(
           chatId,
-          textReport
+          formatReport(report)
         );
 
         return res.status(200).json({
@@ -797,11 +917,6 @@ export default async function handler(
         });
 
       } catch (error) {
-        console.error(
-          "Report error:",
-          error
-        );
-
         await sendMessage(
           chatId,
           `⚠️ ${error.message}`
@@ -813,27 +928,27 @@ export default async function handler(
         });
       }
     }
-
 
     /* =====================================================
        RECORD
     ===================================================== */
 
-    if (command === "record") {
+    if (
+      command === "record"
+    ) {
       try {
-        const rows =
+        const report =
           await buildRecordReport();
 
-        const textReport =
-          formatRecordReport(rows);
-
         /*
-         * sendPhoto() automatically sends
-         * long content as normal messages.
-         */
+          sendPhoto() automatically switches
+          to normal Telegram messages if the
+          report exceeds caption length.
+        */
+
         await sendPhoto(
           chatId,
-          textReport
+          report
         );
 
         return res.status(200).json({
@@ -842,11 +957,6 @@ export default async function handler(
         });
 
       } catch (error) {
-        console.error(
-          "Record error:",
-          error
-        );
-
         await sendMessage(
           chatId,
           `⚠️ ${error.message}`
@@ -859,12 +969,13 @@ export default async function handler(
       }
     }
 
-
     /* =====================================================
-       Unknown slash command
+       UNKNOWN COMMAND
     ===================================================== */
 
-    if (text.startsWith("/")) {
+    if (
+      text.startsWith("/")
+    ) {
       await sendMessage(
         chatId,
         [
@@ -876,14 +987,14 @@ export default async function handler(
 
       return res.status(200).json({
         ok: true,
-        command: "unknown",
+        command:
+          "unknown",
       });
     }
 
-
-    /* =====================================================
-       Normal text
-    ===================================================== */
+    /*
+      Normal text is ignored.
+    */
 
     return res.status(200).json({
       ok: true,
@@ -897,21 +1008,26 @@ export default async function handler(
     );
 
     /*
-     * Do not expose internal details.
-     */
+      Do not expose internal errors.
+    */
+
     try {
       const chatId =
         req.body?.message?.chat?.id;
 
       if (
-        Number.isSafeInteger(chatId)
+        Number.isSafeInteger(
+          chatId
+        )
       ) {
         await sendMessage(
           chatId,
           "⚠️ システムエラーが発生しました。処理は完了していません。"
         );
       }
-    } catch (notifyError) {
+    } catch (
+      notifyError
+    ) {
       console.error(
         "Notification error:",
         notifyError
@@ -919,10 +1035,10 @@ export default async function handler(
     }
 
     /*
-     * Return 200 to Telegram so it does
-     * not endlessly retry an already-handled
-     * application-level error.
-     */
+      Always acknowledge Telegram
+      after internal handling.
+    */
+
     return res.status(200).json({
       ok: false,
       error:
