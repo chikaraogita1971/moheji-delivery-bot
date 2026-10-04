@@ -30,15 +30,6 @@ const MONTHLY_TARGET =
 const AUDIT_LOG_MAX =
   5000;
 
-const LEGACY_DATE =
-  "2026-10-04";
-
-const LEGACY_SALES =
-  17014;
-
-const LEGACY_ORDERS =
-  17;
-
 
 /* =========================================================
    Environment validation
@@ -59,7 +50,7 @@ function requireRedisEnvironment() {
     );
   }
 
-  if (missing.length) {
+  if (missing.length > 0) {
     throw new Error(
       `Missing environment variables: ${missing.join(", ")}`
     );
@@ -102,10 +93,10 @@ function percent(value) {
 
 
 /* =========================================================
-   Number helpers
+   Number validation
 ========================================================= */
 
-function toSafeInteger(
+function safeInteger(
   value,
   name
 ) {
@@ -131,14 +122,14 @@ function positiveInteger(
   name
 ) {
   const number =
-    toSafeInteger(
+    safeInteger(
       value,
       name
     );
 
   if (number <= 0) {
     throw new Error(
-      `${name} must be greater than 0.`
+      `${name} must be greater than zero.`
     );
   }
 
@@ -147,7 +138,7 @@ function positiveInteger(
 
 
 /* =========================================================
-   Redis HTTP
+   Redis REST API
 ========================================================= */
 
 async function redisRequest(
@@ -159,7 +150,8 @@ async function redisRequest(
     await fetch(
       KV_REST_API_URL,
       {
-        method: "POST",
+        method:
+          "POST",
 
         headers: {
           Authorization:
@@ -192,27 +184,19 @@ async function redisRequest(
 }
 
 
-/* =========================================================
-   Redis command
-========================================================= */
-
 async function redisCommand(
   command,
   ...args
 ) {
-  const result =
+  const data =
     await redisRequest([
       command,
       ...args,
     ]);
 
-  return result.result;
+  return data.result;
 }
 
-
-/* =========================================================
-   Redis pipeline
-========================================================= */
 
 async function redisPipeline(
   commands
@@ -223,7 +207,8 @@ async function redisPipeline(
     await fetch(
       `${KV_REST_API_URL}/pipeline`,
       {
-        method: "POST",
+        method:
+          "POST",
 
         headers: {
           Authorization:
@@ -255,10 +240,6 @@ async function redisPipeline(
   return data.result;
 }
 
-
-/* =========================================================
-   Redis EVAL
-========================================================= */
 
 async function redisEval(
   script,
@@ -318,12 +299,12 @@ function getTokyoDateParts(
       date
     );
 
-  const map = {};
+  const values = {};
 
   for (
     const part of parts
   ) {
-    map[
+    values[
       part.type
     ] =
       part.value;
@@ -331,32 +312,32 @@ function getTokyoDateParts(
 
   const year =
     Number(
-      map.year
+      values.year
     );
 
   const month =
     Number(
-      map.month
+      values.month
     );
 
   const day =
     Number(
-      map.day
+      values.day
     );
 
   const hour =
     Number(
-      map.hour
+      values.hour
     );
 
   const minute =
     Number(
-      map.minute
+      values.minute
     );
 
   const second =
     Number(
-      map.second
+      values.second
     );
 
   return {
@@ -427,9 +408,8 @@ function allTimeKey() {
 
 
 /*
-  Existing Redis schema:
-  moheji:delivery:records:<chatId>
-  is a ZSET.
+  既存Redisでは
+  records:<chatId> が ZSET。
 */
 
 function recordIndexKey(
@@ -469,15 +449,6 @@ function auditKey(
 }
 
 
-function legacyKey(
-  chatId
-) {
-  return (
-    `moheji:delivery:legacy:${chatId}:${LEGACY_DATE}`
-  );
-}
-
-
 /* =========================================================
    Chat ID
 ========================================================= */
@@ -485,12 +456,12 @@ function legacyKey(
 function normalizeChatId(
   chatId
 ) {
-  const value =
+  const number =
     Number(chatId);
 
   if (
     !Number.isSafeInteger(
-      value
+      number
     )
   ) {
     throw new Error(
@@ -498,7 +469,7 @@ function normalizeChatId(
     );
   }
 
-  return String(value);
+  return String(number);
 }
 
 
@@ -529,7 +500,9 @@ function hmacSha256(
       value,
       "utf8"
     )
-    .digest("hex");
+    .digest(
+      "hex"
+    );
 }
 
 
@@ -565,14 +538,10 @@ function canonicalAudit(
     audit.operationId,
     audit.type,
     audit.chatId,
-    audit.recordId ||
-      "",
-    audit.dateKey ||
-      "",
-    audit.sales ||
-      0,
-    audit.orders ||
-      0,
+    audit.recordId || "",
+    audit.dateKey || "",
+    audit.sales || 0,
+    audit.orders || 0,
     audit.createdAt,
   ].join("|");
 }
@@ -590,64 +559,7 @@ function signAudit(
 
 
 /* =========================================================
-   Record
-========================================================= */
-
-function buildRecord({
-  chatId,
-  sales,
-  orders,
-  operationId,
-  createdAt,
-}) {
-  const date =
-    getTokyoDateParts(
-      new Date(
-        createdAt
-      )
-    );
-
-  const record = {
-    recordId:
-      createRecordId(),
-
-    operationId,
-
-    chatId:
-      String(chatId),
-
-    dateKey:
-      date.dateKey,
-
-    monthKey:
-      date.monthKey,
-
-    yearKey:
-      date.yearKey,
-
-    sales:
-      String(sales),
-
-    orders:
-      String(orders),
-
-    createdAt,
-
-    status:
-      "active",
-  };
-
-  record.signature =
-    signRecord(
-      record
-    );
-
-  return record;
-}
-
-
-/* =========================================================
-   Redis type inspection
+   Redis type validation
 ========================================================= */
 
 async function inspectKeyType(
@@ -679,10 +591,6 @@ async function assertType(
   }
 }
 
-
-/* =========================================================
-   Sale key validation
-========================================================= */
 
 async function assertSaleKeyTypes({
   chatId,
@@ -735,62 +643,59 @@ async function assertSaleKeyTypes({
 
 
 /* =========================================================
-   Cancel key validation
+   Record creation
 ========================================================= */
 
-async function assertCancelKeyTypes({
+function buildRecord({
   chatId,
-  record,
+  sales,
+  orders,
+  operationId,
+  createdAt,
 }) {
-  await Promise.all([
-    assertType(
-      dailyKey(
-        record.dateKey
-      ),
-      "hash"
-    ),
+  const date =
+    getTokyoDateParts(
+      new Date(
+        createdAt
+      )
+    );
 
-    assertType(
-      monthlyKey(
-        record.monthKey
-      ),
-      "hash"
-    ),
+  const record = {
+    recordId:
+      createRecordId(),
 
-    assertType(
-      yearlyKey(
-        record.yearKey
-      ),
-      "hash"
-    ),
+    operationId,
 
-    assertType(
-      allTimeKey(),
-      "hash"
-    ),
+    chatId:
+      String(chatId),
 
-    assertType(
-      workingDaysKey(
-        record.monthKey
-      ),
-      "set"
-    ),
+    dateKey:
+      date.dateKey,
 
-    assertType(
-      recordIndexKey(
-        chatId
-      ),
-      "zset"
-    ),
+    monthKey:
+      date.monthKey,
 
-    assertType(
-      recordKey(
-        chatId,
-        record.recordId
-      ),
-      "hash"
-    ),
-  ]);
+    yearKey:
+      date.yearKey,
+
+    sales:
+      String(sales),
+
+    orders:
+      String(orders),
+
+    createdAt,
+
+    status:
+      "active",
+  };
+
+  record.signature =
+    signRecord(
+      record
+    );
+
+  return record;
 }
 /* =========================================================
    SALE LUA
@@ -963,8 +868,7 @@ async function registerSale({
   chatId,
   sales,
   orders,
-  operationId =
-    crypto.randomUUID(),
+  operationId,
 }) {
   const normalizedChatId =
     normalizeChatId(
@@ -984,12 +888,9 @@ async function registerSale({
     );
 
   if (
-    typeof operationId !==
-      "string" ||
-    operationId.length <
-      1 ||
-    operationId.length >
-      200
+    typeof operationId !== "string" ||
+    operationId.length < 1 ||
+    operationId.length > 200
   ) {
     throw new Error(
       "Invalid operationId."
@@ -1141,9 +1042,7 @@ async function registerSale({
     );
 
   if (
-    !Array.isArray(
-      result
-    )
+    !Array.isArray(result)
   ) {
     throw new Error(
       "Invalid Redis sale result."
@@ -1160,23 +1059,21 @@ async function registerSale({
         result[1]
       );
 
-    if (
-      duplicateRecord
-    ) {
-      return {
-        duplicate:
-          true,
-
-        operationId,
-
-        record:
-          duplicateRecord,
-      };
+    if (!duplicateRecord) {
+      throw new Error(
+        "Duplicate operation record not found."
+      );
     }
 
-    throw new Error(
-      "Operation already exists but its record could not be found."
-    );
+    return {
+      duplicate:
+        true,
+
+      operationId,
+
+      record:
+        duplicateRecord,
+    };
   }
 
   if (
@@ -1206,15 +1103,15 @@ async function registerSale({
 async function getHash(
   key
 ) {
-  const value =
+  const values =
     await redisCommand(
       "HGETALL",
       key
     );
 
   if (
-    !value ||
-    value.length === 0
+    !values ||
+    values.length === 0
   ) {
     return null;
   }
@@ -1223,13 +1120,13 @@ async function getHash(
 
   for (
     let i = 0;
-    i < value.length;
+    i < values.length;
     i += 2
   ) {
     result[
-      value[i]
+      values[i]
     ] =
-      value[i + 1];
+      values[i + 1];
   }
 
   return result;
@@ -1283,20 +1180,18 @@ async function getLatestActiveRecord(
     );
 
   if (
-    !Array.isArray(
-      ids
-    )
+    !Array.isArray(ids)
   ) {
     return null;
   }
 
   for (
-    const id of ids
+    const recordId of ids
   ) {
     const record =
       await getRecord(
         normalizedChatId,
-        id
+        recordId
       );
 
     if (
@@ -1313,7 +1208,7 @@ async function getLatestActiveRecord(
 
 
 /* =========================================================
-   Verify signature
+   Signature verification
 ========================================================= */
 
 function verifyRecordSignature(
@@ -1332,28 +1227,28 @@ function verifyRecordSignature(
         record
       );
 
-    const a =
+    const actualBuffer =
       Buffer.from(
         record.signature,
         "utf8"
       );
 
-    const b =
+    const expectedBuffer =
       Buffer.from(
         expected,
         "utf8"
       );
 
     if (
-      a.length !==
-      b.length
+      actualBuffer.length !==
+      expectedBuffer.length
     ) {
       return false;
     }
 
     return crypto.timingSafeEqual(
-      a,
-      b
+      actualBuffer,
+      expectedBuffer
     );
   } catch {
     return false;
@@ -1568,13 +1463,22 @@ return {
 
 async function cancelLatestSale({
   chatId,
-  operationId =
-    crypto.randomUUID(),
+  operationId,
 }) {
   const normalizedChatId =
     normalizeChatId(
       chatId
     );
+
+  if (
+    typeof operationId !== "string" ||
+    operationId.length < 1 ||
+    operationId.length > 200
+  ) {
+    throw new Error(
+      "Invalid operationId."
+    );
+  }
 
   const record =
     await getLatestActiveRecord(
@@ -1609,12 +1513,48 @@ async function cancelLatestSale({
       "orders"
     );
 
-  await assertCancelKeyTypes({
-    chatId:
-      normalizedChatId,
+  await Promise.all([
+    assertType(
+      dailyKey(
+        record.dateKey
+      ),
+      "hash"
+    ),
 
-    record,
-  });
+    assertType(
+      monthlyKey(
+        record.monthKey
+      ),
+      "hash"
+    ),
+
+    assertType(
+      yearlyKey(
+        record.yearKey
+      ),
+      "hash"
+    ),
+
+    assertType(
+      allTimeKey(),
+      "hash"
+    ),
+
+    assertType(
+      workingDaysKey(
+        record.monthKey
+      ),
+      "set"
+    ),
+
+    assertType(
+      recordKey(
+        normalizedChatId,
+        record.recordId
+      ),
+      "hash"
+    ),
+  ]);
 
   const audit = {
     operationId,
@@ -1702,9 +1642,7 @@ async function cancelLatestSale({
     );
 
   if (
-    !Array.isArray(
-      result
-    )
+    !Array.isArray(result)
   ) {
     throw new Error(
       "Invalid Redis cancel result."
@@ -1762,7 +1700,7 @@ async function cancelLatestSale({
   };
 }
 /* =========================================================
-   Aggregate
+   Aggregates
 ========================================================= */
 
 async function getAggregate(
@@ -1881,9 +1819,7 @@ async function getMonthlyBest(
     );
 
   if (
-    !Array.isArray(
-      keys
-    ) ||
+    !Array.isArray(keys) ||
     keys.length === 0
   ) {
     return {
@@ -1892,11 +1828,8 @@ async function getMonthlyBest(
     };
   }
 
-  let bestSales =
-    0;
-
-  let bestOrders =
-    0;
+  let bestSales = 0;
+  let bestOrders = 0;
 
   for (
     const key of keys
@@ -1944,7 +1877,7 @@ async function getMonthlyBest(
 
 
 /* =========================================================
-   REPORT
+   Report
 ========================================================= */
 
 async function buildReport() {
@@ -1982,10 +1915,6 @@ async function buildReport() {
         now.monthKey
       ),
     ]);
-
-  /*
-    必ず数値のまま計算する。
-  */
 
   const todaySales =
     Number(
@@ -2038,9 +1967,7 @@ async function buildReport() {
     );
 
 
-  /*
-    1件あたり
-  */
+  /* 1件あたり */
 
   const averageOrderValue =
     todayOrders > 0
@@ -2051,9 +1978,7 @@ async function buildReport() {
       : 0;
 
 
-  /*
-    平均売上／日
-  */
+  /* 平均売上／日 */
 
   const averageDailySales =
     workDays > 0
@@ -2064,9 +1989,7 @@ async function buildReport() {
       : 0;
 
 
-  /*
-    達成率
-  */
+  /* 目標達成率 */
 
   const achievementRate =
     MONTHLY_TARGET > 0
@@ -2077,9 +2000,7 @@ async function buildReport() {
       : 0;
 
 
-  /*
-    10個の進捗表示
-  */
+  /* 10段階進捗 */
 
   const progressCount =
     Math.min(
@@ -2103,9 +2024,7 @@ async function buildReport() {
     );
 
 
-  /*
-    東京時間
-  */
+  /* 東京時間 */
 
   const timestamp =
     `${now.year}/` +
@@ -2116,8 +2035,8 @@ async function buildReport() {
 
 
   /*
+    ここは画像の表示内容に合わせる。
     空行なし。
-    Unicode絵文字をそのまま文字列として返す。
   */
 
   return [
@@ -2144,28 +2063,29 @@ async function buildReport() {
 
 
 /* =========================================================
-   RECORD REPORT
+   Record report
 ========================================================= */
 
 async function buildRecordReport() {
-  const current =
-    new Date();
+  const now =
+    getTokyoDateParts();
 
   const lines = [
-    "📚 過去24か月 売上記録",
+    "📚 売上記録",
   ];
 
   for (
-    let i = 0;
-    i < 24;
-    i++
+    let offset = 0;
+    offset < 24;
+    offset++
   ) {
     const date =
       new Date(
         Date.UTC(
-          current.getUTCFullYear(),
-          current.getUTCMonth() -
-            i,
+          now.year,
+          now.month -
+            1 -
+            offset,
           1
         )
       );
@@ -2184,16 +2104,16 @@ async function buildRecordReport() {
         monthKey
       );
 
-    const days =
+    const workDays =
       await getWorkingDays(
         monthKey
       );
 
     const average =
-      days > 0
+      workDays > 0
         ? Math.floor(
             monthly.sales /
-            days
+            workDays
           )
         : 0;
 
@@ -2201,7 +2121,7 @@ async function buildRecordReport() {
       `${year}/${String(month).padStart(2, "0")}`,
       `💰 売上 ${yen(monthly.sales)}`,
       `📦 件数 ${integer(monthly.orders)}件`,
-      `📆 稼働日数 ${integer(days)}日`,
+      `📆 稼働日数 ${integer(workDays)}日`,
       `📈 日平均 ${yen(average)}`
     );
   }
@@ -2268,202 +2188,6 @@ async function getAuditLogs(
     )
   );
 }
-
-
-/* =========================================================
-   Legacy migration
-========================================================= */
-
-async function migrateLegacyCancellation(
-  chatId
-) {
-  const normalizedChatId =
-    normalizeChatId(
-      chatId
-    );
-
-  const flagKey =
-    legacyKey(
-      normalizedChatId
-    );
-
-  const existing =
-    await redisCommand(
-      "GET",
-      flagKey
-    );
-
-  if (
-    existing
-  ) {
-    return {
-      migrated:
-        false,
-
-      alreadyDone:
-        true,
-    };
-  }
-
-  /*
-    Legacy record is treated as an existing sale entry.
-    It is inserted only once.
-  */
-
-  await assertSaleKeyTypes({
-    chatId:
-      normalizedChatId,
-
-    dateKey:
-      LEGACY_DATE,
-
-    monthKey:
-      "2026-10",
-
-    yearKey:
-      "2026",
-  });
-
-  await redisPipeline([
-    [
-      "HINCRBY",
-
-      dailyKey(
-        LEGACY_DATE
-      ),
-
-      "sales",
-
-      String(
-        LEGACY_SALES
-      ),
-    ],
-
-    [
-      "HINCRBY",
-
-      dailyKey(
-        LEGACY_DATE
-      ),
-
-      "orders",
-
-      String(
-        LEGACY_ORDERS
-      ),
-    ],
-
-    [
-      "HINCRBY",
-
-      monthlyKey(
-        "2026-10"
-      ),
-
-      "sales",
-
-      String(
-        LEGACY_SALES
-      ),
-    ],
-
-    [
-      "HINCRBY",
-
-      monthlyKey(
-        "2026-10"
-      ),
-
-      "orders",
-
-      String(
-        LEGACY_ORDERS
-      ),
-    ],
-
-    [
-      "HINCRBY",
-
-      yearlyKey(
-        "2026"
-      ),
-
-      "sales",
-
-      String(
-        LEGACY_SALES
-      ),
-    ],
-
-    [
-      "HINCRBY",
-
-      yearlyKey(
-        "2026"
-      ),
-
-      "orders",
-
-      String(
-        LEGACY_ORDERS
-      ),
-    ],
-
-    [
-      "HINCRBY",
-
-      allTimeKey(),
-
-      "sales",
-
-      String(
-        LEGACY_SALES
-      ),
-    ],
-
-    [
-      "HINCRBY",
-
-      allTimeKey(),
-
-      "orders",
-
-      String(
-        LEGACY_ORDERS
-      ),
-    ],
-
-    [
-      "SADD",
-
-      workingDaysKey(
-        "2026-10"
-      ),
-
-      LEGACY_DATE,
-    ],
-
-    [
-      "SET",
-
-      flagKey,
-
-      "done",
-    ],
-  ]);
-
-  return {
-    migrated:
-      true,
-
-    alreadyDone:
-      false,
-  };
-}
-
-
-const runLegacyMigration =
-  migrateLegacyCancellation;
 
 
 /* =========================================================
@@ -2534,9 +2258,6 @@ export {
 
   buildReport,
   buildRecordReport,
-
-  runLegacyMigration,
-  migrateLegacyCancellation,
 
   getAuditLogs,
 
