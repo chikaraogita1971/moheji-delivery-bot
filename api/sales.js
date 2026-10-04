@@ -2,6 +2,7 @@
 
 import crypto from "crypto";
 
+
 /* =========================================================
    Environment
 ========================================================= */
@@ -20,22 +21,30 @@ const SALES_HMAC_SECRET =
    Constants
 ========================================================= */
 
-const MONTHLY_TARGET = 500000;
-const AUDIT_LOG_MAX = 5000;
+const TIME_ZONE =
+  "Asia/Tokyo";
 
-const LEGACY_DATE_KEY = "2026-10-04";
-const LEGACY_MONTH_KEY = "2026-10";
-const LEGACY_YEAR_KEY = "2026";
+const MONTHLY_TARGET =
+  500000;
 
-const LEGACY_SALES = 17014;
-const LEGACY_ORDERS = 17;
+const AUDIT_LOG_MAX =
+  5000;
+
+const LEGACY_DATE =
+  "2026-10-04";
+
+const LEGACY_SALES =
+  17014;
+
+const LEGACY_ORDERS =
+  17;
 
 
 /* =========================================================
    Environment validation
 ========================================================= */
 
-function requireEnvironment() {
+function requireRedisEnvironment() {
   const missing = [];
 
   if (!KV_REST_API_URL) {
@@ -50,13 +59,7 @@ function requireEnvironment() {
     );
   }
 
-  if (!SALES_HMAC_SECRET) {
-    missing.push(
-      "SALES_HMAC_SECRET"
-    );
-  }
-
-  if (missing.length > 0) {
+  if (missing.length) {
     throw new Error(
       `Missing environment variables: ${missing.join(", ")}`
     );
@@ -64,116 +67,97 @@ function requireEnvironment() {
 }
 
 
+function requireHmacSecret() {
+  if (!SALES_HMAC_SECRET) {
+    throw new Error(
+      "Missing environment variable: SALES_HMAC_SECRET"
+    );
+  }
+}
+
+
 /* =========================================================
-   Redis REST
+   Formatting
 ========================================================= */
 
-async function redisRequest(
-  endpoint,
-  body
-) {
-  requireEnvironment();
-
-  const base =
-    KV_REST_API_URL.replace(
-      /\/+$/,
-      ""
-    );
-
-  const url =
-    endpoint
-      ? `${base}/${endpoint.replace(/^\/+/, "")}`
-      : base;
-
-  const response =
-    await fetch(url, {
-      method: "POST",
-
-      headers: {
-        Authorization:
-          `Bearer ${KV_REST_API_TOKEN}`,
-
-        "Content-Type":
-          "application/json",
-      },
-
-      body:
-        JSON.stringify(body),
-    });
-
-  let data;
-
-  try {
-    data =
-      await response.json();
-  } catch {
-    throw new Error(
-      `Redis returned invalid JSON. HTTP ${response.status}`
-    );
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      `Redis HTTP ${response.status}: ${JSON.stringify(data)}`
-    );
-  }
-
-  if (data?.error) {
-    throw new Error(
-      `Redis error: ${data.error}`
-    );
-  }
-
-  return data;
-}
-
-
-async function redisCommand(
-  command,
-  ...args
-) {
-  const data =
-    await redisRequest(
-      "",
-      [
-        command,
-        ...args,
-      ]
-    );
-
-  return data?.result;
-}
-
-
-async function redisEval(
-  script,
-  keys = [],
-  args = []
-) {
-  return redisCommand(
-    "EVAL",
-    script,
-    String(keys.length),
-    ...keys,
-    ...args.map(String)
+function integer(value) {
+  return Number(
+    value || 0
+  ).toLocaleString(
+    "ja-JP"
   );
 }
 
 
-async function redisPipeline(
-  commands
-) {
-  requireEnvironment();
+function yen(value) {
+  return `¥${integer(value)}`;
+}
 
-  const base =
-    KV_REST_API_URL.replace(
-      /\/+$/,
-      ""
+
+function percent(value) {
+  return `${Number(
+    value || 0
+  ).toFixed(1)}%`;
+}
+
+
+/* =========================================================
+   Number helpers
+========================================================= */
+
+function toSafeInteger(
+  value,
+  name
+) {
+  const number =
+    Number(value);
+
+  if (
+    !Number.isSafeInteger(
+      number
+    )
+  ) {
+    throw new Error(
+      `${name} must be a safe integer.`
     );
+  }
+
+  return number;
+}
+
+
+function positiveInteger(
+  value,
+  name
+) {
+  const number =
+    toSafeInteger(
+      value,
+      name
+    );
+
+  if (number <= 0) {
+    throw new Error(
+      `${name} must be greater than 0.`
+    );
+  }
+
+  return number;
+}
+
+
+/* =========================================================
+   Redis HTTP
+========================================================= */
+
+async function redisRequest(
+  command
+) {
+  requireRedisEnvironment();
 
   const response =
     await fetch(
-      `${base}/pipeline`,
+      KV_REST_API_URL,
       {
         method: "POST",
 
@@ -186,24 +170,19 @@ async function redisPipeline(
         },
 
         body:
-          JSON.stringify(commands),
+          JSON.stringify(command),
       }
     );
 
-  let data;
+  const data =
+    await response.json();
 
-  try {
-    data =
-      await response.json();
-  } catch {
+  if (
+    !response.ok ||
+    data?.error
+  ) {
     throw new Error(
-      "Redis pipeline returned invalid JSON"
-    );
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      `Redis pipeline HTTP ${response.status}: ${JSON.stringify(data)}`
+      `Redis HTTP ${response.status}: ${JSON.stringify(data)}`
     );
   }
 
@@ -212,84 +191,84 @@ async function redisPipeline(
 
 
 /* =========================================================
-   Redis keys
+   Redis command
 ========================================================= */
 
-function dailyKey(dateKey) {
-  return (
-    `moheji:delivery:daily:${dateKey}`
-  );
+async function redisCommand(
+  command,
+  ...args
+) {
+  const result =
+    await redisRequest([
+      command,
+      ...args,
+    ]);
+
+  return result.result;
 }
 
 
-function monthlyKey(monthKey) {
-  return (
-    `moheji:delivery:month:${monthKey}`
-  );
+/* =========================================================
+   Redis pipeline
+========================================================= */
+
+async function redisPipeline(
+  commands
+) {
+  requireRedisEnvironment();
+
+  const response =
+    await fetch(
+      `${KV_REST_API_URL}/pipeline`,
+      {
+        method: "POST",
+
+        headers: {
+          Authorization:
+            `Bearer ${KV_REST_API_TOKEN}`,
+
+          "Content-Type":
+            "application/json",
+        },
+
+        body:
+          JSON.stringify(
+            commands
+          ),
+      }
+    );
+
+  const data =
+    await response.json();
+
+  if (
+    !response.ok ||
+    data?.error
+  ) {
+    throw new Error(
+      `Redis pipeline HTTP ${response.status}: ${JSON.stringify(data)}`
+    );
+  }
+
+  return data.result;
 }
 
 
-function yearlyKey(yearKey) {
-  return (
-    `moheji:delivery:year:${yearKey}`
-  );
-}
+/* =========================================================
+   Redis EVAL
+========================================================= */
 
-
-function workingDaysKey(monthKey) {
-  return (
-    `moheji:delivery:workingdays:${monthKey}`
-  );
-}
-
-
-function allTimeKey() {
-  return (
-    "moheji:delivery:alltime"
-  );
-}
-
-
-function recordKey(recordId) {
-  return (
-    `moheji:delivery:record:${recordId}`
-  );
-}
-
-
-/*
- * IMPORTANT
- *
- * Existing Redis schema:
- *
- * moheji:delivery:records:<chatId>
- *
- * is a ZSET.
- */
-function recordIndexKey(chatId) {
-  return (
-    `moheji:delivery:records:${chatId}`
-  );
-}
-
-
-function operationKey(operationId) {
-  return (
-    `moheji:delivery:operation:${operationId}`
-  );
-}
-
-
-function auditKey() {
-  return (
-    "moheji:delivery:audit"
-  );
-}
-
-
-function legacyFlagKey() {
-  return (
-    "moheji:delivery:legacy-cancel-2026-10-04"
+async function redisEval(
+  script,
+  keys,
+  args
+) {
+  return redisCommand(
+    "EVAL",
+    script,
+    String(keys.length),
+    ...keys,
+    ...args.map(String)
   );
 }
 
@@ -306,84 +285,193 @@ function getTokyoDateParts(
       "en-CA",
       {
         timeZone:
-          "Asia/Tokyo",
+          TIME_ZONE,
 
-        year:
-          "numeric",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
 
-        month:
-          "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
 
-        day:
-          "2-digit",
+        hourCycle: "h23",
       }
     ).formatToParts(date);
 
-  const result = {};
+  const map = {};
 
   for (const part of parts) {
-    if (
-      part.type !== "literal"
-    ) {
-      result[part.type] =
-        part.value;
-    }
+    map[part.type] =
+      part.value;
   }
 
+  const year =
+    Number(map.year);
+
+  const month =
+    Number(map.month);
+
+  const day =
+    Number(map.day);
+
+  const hour =
+    Number(map.hour);
+
+  const minute =
+    Number(map.minute);
+
+  const second =
+    Number(map.second);
+
   return {
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
+
     dateKey:
-      `${result.year}-${result.month}-${result.day}`,
+      `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
 
     monthKey:
-      `${result.year}-${result.month}`,
+      `${year}-${String(month).padStart(2, "0")}`,
 
     yearKey:
-      result.year,
+      String(year),
   };
 }
 
 
 /* =========================================================
-   Formatting helpers
+   Keys
 ========================================================= */
 
-function yen(value) {
-  const number =
-    Number(value || 0);
-
-  return (
-    `¥${number.toLocaleString("ja-JP")}`
-  );
+function dailyKey(
+  dateKey
+) {
+  return `moheji:delivery:daily:${dateKey}`;
 }
 
 
-function integer(value) {
-  const number =
-    Number(value);
+function monthlyKey(
+  monthKey
+) {
+  return `moheji:delivery:month:${monthKey}`;
+}
 
-  if (
-    !Number.isFinite(number)
-  ) {
-    return 0;
-  }
 
-  return Math.round(number);
+function yearlyKey(
+  yearKey
+) {
+  return `moheji:delivery:year:${yearKey}`;
+}
+
+
+function workingDaysKey(
+  monthKey
+) {
+  return `moheji:delivery:workingdays:${monthKey}`;
+}
+
+
+function allTimeKey() {
+  return "moheji:delivery:alltime";
+}
+
+
+function recordKey(
+  chatId,
+  recordId
+) {
+  return `moheji:delivery:record:${chatId}:${recordId}`;
+}
+
+
+/*
+  IMPORTANT:
+  Existing Redis schema uses ZSET here.
+*/
+function recordIndexKey(
+  chatId
+) {
+  return `moheji:delivery:records:${chatId}`;
+}
+
+
+function operationKey(
+  operationId
+) {
+  return `moheji:delivery:operation:${operationId}`;
+}
+
+
+function auditKey(
+  chatId
+) {
+  return `moheji:delivery:audit:${chatId}`;
+}
+
+
+function legacyKey(
+  chatId
+) {
+  return `moheji:delivery:legacy:${chatId}:${LEGACY_DATE}`;
 }
 
 
 /* =========================================================
-   HMAC
+   Chat ID validation
 ========================================================= */
 
-function hmacSha256(value) {
-  requireEnvironment();
+function normalizeChatId(
+  chatId
+) {
+  const value =
+    Number(chatId);
+
+  if (
+    !Number.isSafeInteger(
+      value
+    )
+  ) {
+    throw new Error(
+      "Invalid chat ID."
+    );
+  }
+
+  return String(value);
+}
+
+
+/* =========================================================
+   Record ID
+========================================================= */
+
+function createRecordId() {
+  return crypto.randomUUID();
+}
+
+
+/* =========================================================
+   HMAC-SHA256
+========================================================= */
+
+function hmacSha256(
+  value
+) {
+  requireHmacSecret();
 
   return crypto
     .createHmac(
       "sha256",
       SALES_HMAC_SECRET
     )
-    .update(value)
+    .update(
+      value,
+      "utf8"
+    )
     .digest("hex");
 }
 
@@ -392,11 +480,9 @@ function canonicalRecord(
   record
 ) {
   return [
-    record.id,
+    record.recordId,
     record.chatId,
     record.dateKey,
-    record.monthKey,
-    record.yearKey,
     record.sales,
     record.orders,
     record.createdAt,
@@ -404,50 +490,13 @@ function canonicalRecord(
 }
 
 
-function signRecord(record) {
-  return hmacSha256(
-    canonicalRecord(record)
-  );
-}
-
-
-function verifyRecordSignature(
+function signRecord(
   record
 ) {
-  if (
-    !record ||
-    !record.signature
-  ) {
-    return false;
-  }
-
-  const expected =
-    signRecord(record);
-
-  const actual =
-    String(record.signature);
-
-  const a =
-    Buffer.from(
-      expected,
-      "utf8"
-    );
-
-  const b =
-    Buffer.from(
-      actual,
-      "utf8"
-    );
-
-  if (
-    a.length !== b.length
-  ) {
-    return false;
-  }
-
-  return crypto.timingSafeEqual(
-    a,
-    b
+  return hmacSha256(
+    canonicalRecord(
+      record
+    )
   );
 }
 
@@ -457,416 +506,213 @@ function canonicalAudit(
 ) {
   return [
     audit.operationId,
-    audit.action,
-    audit.recordId,
+    audit.type,
     audit.chatId,
-    audit.sales,
-    audit.orders,
-    audit.timestamp,
+    audit.recordId || "",
+    audit.dateKey || "",
+    audit.sales || 0,
+    audit.orders || 0,
+    audit.createdAt,
   ].join("|");
 }
 
 
-function signAudit(audit) {
+function signAudit(
+  audit
+) {
   return hmacSha256(
-    canonicalAudit(audit)
+    canonicalAudit(
+      audit
+    )
   );
 }
 
 
 /* =========================================================
-   Validation
-========================================================= */
-
-function normalizeChatId(
-  chatId
-) {
-  const value =
-    String(
-      chatId ?? ""
-    ).trim();
-
-  if (
-    !/^-?\d{1,20}$/.test(
-      value
-    )
-  ) {
-    throw new Error(
-      "Invalid chatId"
-    );
-  }
-
-  return value;
-}
-
-
-function normalizeSales(
-  value
-) {
-  const sales =
-    Number(value);
-
-  if (
-    !Number.isSafeInteger(
-      sales
-    )
-  ) {
-    throw new Error(
-      "Sales must be an integer"
-    );
-  }
-
-  if (
-    sales <= 0 ||
-    sales > 1000000000
-  ) {
-    throw new Error(
-      "Sales is out of range"
-    );
-  }
-
-  return sales;
-}
-
-
-function normalizeOrders(
-  value
-) {
-  const orders =
-    Number(value);
-
-  if (
-    !Number.isSafeInteger(
-      orders
-    )
-  ) {
-    throw new Error(
-      "Orders must be an integer"
-    );
-  }
-
-  if (
-    orders <= 0 ||
-    orders > 1000000
-  ) {
-    throw new Error(
-      "Orders is out of range"
-    );
-  }
-
-  return orders;
-}
-
-
-function createOperationId() {
-  return crypto.randomUUID();
-}
-
-
-/* =========================================================
-   Record
+   Record creation
 ========================================================= */
 
 function buildRecord({
   chatId,
   sales,
   orders,
-  createdAt =
-    new Date().toISOString(),
+  operationId,
+  createdAt,
 }) {
-  const normalizedChatId =
-    normalizeChatId(chatId);
-
-  const normalizedSales =
-    normalizeSales(sales);
-
-  const normalizedOrders =
-    normalizeOrders(orders);
-
   const date =
-    new Date(createdAt);
-
-  if (
-    Number.isNaN(
-      date.getTime()
-    )
-  ) {
-    throw new Error(
-      "Invalid createdAt"
-    );
-  }
-
-  const {
-    dateKey,
-    monthKey,
-    yearKey,
-  } =
     getTokyoDateParts(
-      date
+      new Date(createdAt)
     );
-
-  const id =
-    crypto.randomUUID();
 
   const record = {
-    id,
-    chatId:
-      normalizedChatId,
+    recordId:
+      createRecordId(),
 
-    dateKey,
-    monthKey,
-    yearKey,
+    operationId,
+
+    chatId:
+      String(chatId),
+
+    dateKey:
+      date.dateKey,
+
+    monthKey:
+      date.monthKey,
+
+    yearKey:
+      date.yearKey,
 
     sales:
-      normalizedSales,
+      String(sales),
 
     orders:
-      normalizedOrders,
+      String(orders),
 
     createdAt,
+
+    status:
+      "active",
   };
 
   record.signature =
-    signRecord(record);
+    signRecord(
+      record
+    );
 
   return record;
 }
 
 
 /* =========================================================
-   Redis type inspection
+   Type inspection
 ========================================================= */
 
-async function inspectKeyTypes(
-  keys
+async function inspectKeyType(
+  key
 ) {
-  const commands =
-    keys.map(
-      (key) => [
-        "TYPE",
-        key,
-      ]
-    );
-
-  const results =
-    await redisPipeline(
-      commands
-    );
-
-  return keys.map(
-    (key, index) => ({
-      key,
-
-      type:
-        results?.[index]
-          ?.result ??
-        "unknown",
-    })
+  return redisCommand(
+    "TYPE",
+    key
   );
 }
 
 
-function validRedisType(
-  actual,
+async function assertType(
+  key,
   expected
 ) {
-  return (
-    actual === "none" ||
-    actual === expected
-  );
-}
-
-
-async function assertSaleKeyTypes({
-  operationId,
-  recordId,
-  chatId,
-  dateKey,
-  monthKey,
-  yearKey,
-}) {
-  const keys = [
-    operationKey(
-      operationId
-    ),
-
-    recordKey(
-      recordId
-    ),
-
-    recordIndexKey(
-      chatId
-    ),
-
-    dailyKey(
-      dateKey
-    ),
-
-    monthlyKey(
-      monthKey
-    ),
-
-    yearlyKey(
-      yearKey
-    ),
-
-    allTimeKey(),
-
-    workingDaysKey(
-      monthKey
-    ),
-
-    auditKey(),
-  ];
-
-  const expected = [
-    "string",
-    "hash",
-    "zset",
-    "hash",
-    "hash",
-    "hash",
-    "hash",
-    "set",
-    "list",
-  ];
-
-  const inspected =
-    await inspectKeyTypes(
-      keys
+  const actual =
+    await inspectKeyType(
+      key
     );
 
-  const bad = [];
-
-  for (
-    let i = 0;
-    i < inspected.length;
-    i++
+  if (
+    actual !== "none" &&
+    actual !== expected
   ) {
-    if (
-      !validRedisType(
-        inspected[i].type,
-        expected[i]
-      )
-    ) {
-      bad.push({
-        key:
-          inspected[i].key,
-
-        expected:
-          expected[i],
-
-        actual:
-          inspected[i].type,
-      });
-    }
-  }
-
-  if (bad.length > 0) {
     throw new Error(
-      "REDIS_TYPE_MISMATCH: " +
-      bad.map(
-        (item) =>
-          `${item.key} expected=${item.expected} actual=${item.actual}`
-      ).join("; ")
-    );
-  }
-}
-
-
-async function assertCancelKeyTypes({
-  operationId,
-  recordId,
-  dateKey,
-  monthKey,
-  yearKey,
-}) {
-  const keys = [
-    operationKey(
-      operationId
-    ),
-
-    recordKey(
-      recordId
-    ),
-
-    dailyKey(
-      dateKey
-    ),
-
-    monthlyKey(
-      monthKey
-    ),
-
-    yearlyKey(
-      yearKey
-    ),
-
-    allTimeKey(),
-
-    workingDaysKey(
-      monthKey
-    ),
-
-    auditKey(),
-  ];
-
-  const expected = [
-    "string",
-    "hash",
-    "hash",
-    "hash",
-    "hash",
-    "hash",
-    "set",
-    "list",
-  ];
-
-  const inspected =
-    await inspectKeyTypes(
-      keys
-    );
-
-  const bad = [];
-
-  for (
-    let i = 0;
-    i < inspected.length;
-    i++
-  ) {
-    if (
-      !validRedisType(
-        inspected[i].type,
-        expected[i]
-      )
-    ) {
-      bad.push({
-        key:
-          inspected[i].key,
-
-        expected:
-          expected[i],
-
-        actual:
-          inspected[i].type,
-      });
-    }
-  }
-
-  if (bad.length > 0) {
-    throw new Error(
-      "REDIS_TYPE_MISMATCH: " +
-      bad.map(
-        (item) =>
-          `${item.key} expected=${item.expected} actual=${item.actual}`
-      ).join("; ")
+      `REDIS_TYPE_MISMATCH: ${key} expected=${expected} actual=${actual}`
     );
   }
 }
 
 
 /* =========================================================
-   SALE atomic transaction
+   Sale key validation
+========================================================= */
+
+async function assertSaleKeyTypes({
+  chatId,
+  dateKey,
+  monthKey,
+  yearKey,
+}) {
+  await Promise.all([
+    assertType(
+      dailyKey(dateKey),
+      "hash"
+    ),
+
+    assertType(
+      monthlyKey(monthKey),
+      "hash"
+    ),
+
+    assertType(
+      yearlyKey(yearKey),
+      "hash"
+    ),
+
+    assertType(
+      allTimeKey(),
+      "hash"
+    ),
+
+    assertType(
+      workingDaysKey(monthKey),
+      "set"
+    ),
+
+    assertType(
+      recordIndexKey(chatId),
+      "zset"
+    ),
+  ]);
+}
+
+
+/* =========================================================
+   Cancel key validation
+========================================================= */
+
+async function assertCancelKeyTypes({
+  chatId,
+  record,
+}) {
+  await Promise.all([
+    assertType(
+      dailyKey(record.dateKey),
+      "hash"
+    ),
+
+    assertType(
+      monthlyKey(record.monthKey),
+      "hash"
+    ),
+
+    assertType(
+      yearlyKey(record.yearKey),
+      "hash"
+    ),
+
+    assertType(
+      allTimeKey(),
+      "hash"
+    ),
+
+    assertType(
+      workingDaysKey(record.monthKey),
+      "set"
+    ),
+
+    assertType(
+      recordIndexKey(chatId),
+      "zset"
+    ),
+
+    assertType(
+      recordKey(
+        chatId,
+        record.recordId
+      ),
+      "hash"
+    ),
+  ]);
+}
+
+
+/* =========================================================
+   SALE LUA
 ========================================================= */
 
 const SALE_SCRIPT = `
@@ -881,147 +727,130 @@ local workingDaysKey = KEYS[8]
 local auditKey = KEYS[9]
 
 local operationId = ARGV[1]
+local recordId = ARGV[2]
+local chatId = ARGV[3]
+local dateKey = ARGV[4]
+local monthKey = ARGV[5]
+local yearKey = ARGV[6]
+local sales = tonumber(ARGV[7])
+local orders = tonumber(ARGV[8])
+local createdAt = ARGV[9]
+local signature = ARGV[10]
+local auditJson = ARGV[11]
+local auditSignature = ARGV[12]
+local timestamp = tonumber(ARGV[13])
 
-local existing =
-  redis.call(
-    'GET',
-    operationKey
-  )
+local existing = redis.call("GET", operationKey)
 
 if existing then
-  return {
-    'DUPLICATE',
-    existing
-  }
+  return {"DUPLICATE", existing}
 end
 
 redis.call(
-  'HSET',
+  "HSET",
   recordKey,
-
-  'id',
-  ARGV[2],
-
-  'chatId',
-  ARGV[3],
-
-  'dateKey',
-  ARGV[4],
-
-  'monthKey',
-  ARGV[5],
-
-  'yearKey',
-  ARGV[6],
-
-  'sales',
-  ARGV[7],
-
-  'orders',
-  ARGV[8],
-
-  'createdAt',
-  ARGV[9],
-
-  'status',
-  'active',
-
-  'signature',
-  ARGV[10]
+  "recordId", recordId,
+  "operationId", operationId,
+  "chatId", chatId,
+  "dateKey", dateKey,
+  "monthKey", monthKey,
+  "yearKey", yearKey,
+  "sales", sales,
+  "orders", orders,
+  "createdAt", createdAt,
+  "status", "active",
+  "signature", signature
 )
 
 redis.call(
-  'ZADD',
+  "ZADD",
   recordIndexKey,
-  ARGV[12],
-  ARGV[2]
+  timestamp,
+  recordId
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   dailyKey,
-  'sales',
-  ARGV[7]
+  "sales",
+  sales
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   dailyKey,
-  'orders',
-  ARGV[8]
+  "orders",
+  orders
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   monthlyKey,
-  'sales',
-  ARGV[7]
+  "sales",
+  sales
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   monthlyKey,
-  'orders',
-  ARGV[8]
+  "orders",
+  orders
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   yearlyKey,
-  'sales',
-  ARGV[7]
+  "sales",
+  sales
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   yearlyKey,
-  'orders',
-  ARGV[8]
+  "orders",
+  orders
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   allTimeKey,
-  'sales',
-  ARGV[7]
+  "sales",
+  sales
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   allTimeKey,
-  'orders',
-  ARGV[8]
+  "orders",
+  orders
 )
 
 redis.call(
-  'SADD',
+  "SADD",
   workingDaysKey,
-  ARGV[4]
+  dateKey
 )
 
 redis.call(
-  'LPUSH',
+  "LPUSH",
   auditKey,
-  ARGV[11]
+  auditJson
 )
 
 redis.call(
-  'LTRIM',
+  "LTRIM",
   auditKey,
   0,
   4999
 )
 
 redis.call(
-  'SET',
+  "SET",
   operationKey,
-  ARGV[2]
+  recordId
 )
 
-return {
-  'OK',
-  ARGV[2]
-}
+return {"OK", recordId}
 `;
 
 
@@ -1033,127 +862,156 @@ async function registerSale({
   chatId,
   sales,
   orders,
+  operationId = crypto.randomUUID(),
 }) {
-  const operationId =
-    createOperationId();
+  const normalizedChatId =
+    normalizeChatId(
+      chatId
+    );
 
-  const record =
-    buildRecord({
-      chatId,
+  const normalizedSales =
+    positiveInteger(
       sales,
+      "sales"
+    );
+
+  const normalizedOrders =
+    positiveInteger(
       orders,
-    });
-
-  await assertSaleKeyTypes({
-    operationId,
-
-    recordId:
-      record.id,
-
-    chatId:
-      record.chatId,
-
-    dateKey:
-      record.dateKey,
-
-    monthKey:
-      record.monthKey,
-
-    yearKey:
-      record.yearKey,
-  });
-
-  const audit = {
-    operationId,
-
-    action:
-      "sale",
-
-    recordId:
-      record.id,
-
-    chatId:
-      record.chatId,
-
-    sales:
-      record.sales,
-
-    orders:
-      record.orders,
-
-    timestamp:
-      new Date().toISOString(),
-  };
-
-  audit.signature =
-    signAudit(audit);
-
-  const timestamp =
-    Date.parse(
-      record.createdAt
+      "orders"
     );
 
   if (
-    !Number.isFinite(
-      timestamp
-    )
+    typeof operationId !==
+      "string" ||
+    operationId.length < 1 ||
+    operationId.length > 200
   ) {
     throw new Error(
-      "Invalid record timestamp"
+      "Invalid operationId."
     );
   }
+
+  const now =
+    new Date();
+
+  const date =
+    getTokyoDateParts(
+      now
+    );
+
+  await assertSaleKeyTypes({
+    chatId:
+      normalizedChatId,
+
+    dateKey:
+      date.dateKey,
+
+    monthKey:
+      date.monthKey,
+
+    yearKey:
+      date.yearKey,
+  });
+
+  const record =
+    buildRecord({
+      chatId:
+        normalizedChatId,
+
+      sales:
+        normalizedSales,
+
+      orders:
+        normalizedOrders,
+
+      operationId,
+
+      createdAt:
+        now.toISOString(),
+    });
+
+  const audit = {
+    operationId,
+    type: "sale",
+    chatId:
+      normalizedChatId,
+    recordId:
+      record.recordId,
+    dateKey:
+      record.dateKey,
+    sales:
+      normalizedSales,
+    orders:
+      normalizedOrders,
+    createdAt:
+      record.createdAt,
+  };
+
+  const auditJson =
+    JSON.stringify({
+      ...audit,
+      signature:
+        signAudit(
+          audit
+        ),
+    });
 
   const result =
     await redisEval(
       SALE_SCRIPT,
-
       [
         operationKey(
           operationId
         ),
 
         recordKey(
-          record.id
+          normalizedChatId,
+          record.recordId
         ),
 
         recordIndexKey(
-          record.chatId
+          normalizedChatId
         ),
 
         dailyKey(
-          record.dateKey
+          date.dateKey
         ),
 
         monthlyKey(
-          record.monthKey
+          date.monthKey
         ),
 
         yearlyKey(
-          record.yearKey
+          date.yearKey
         ),
 
         allTimeKey(),
 
         workingDaysKey(
-          record.monthKey
+          date.monthKey
         ),
 
-        auditKey(),
+        auditKey(
+          normalizedChatId
+        ),
       ],
-
       [
         operationId,
-        record.id,
-        record.chatId,
-        record.dateKey,
-        record.monthKey,
-        record.yearKey,
-        record.sales,
-        record.orders,
+        record.recordId,
+        normalizedChatId,
+        date.dateKey,
+        date.monthKey,
+        date.yearKey,
+        normalizedSales,
+        normalizedOrders,
         record.createdAt,
         record.signature,
-        JSON.stringify(audit),
-        timestamp,
+        auditJson,
+        signAudit(audit),
+        Date.parse(
+          record.createdAt
+        ),
       ]
     );
 
@@ -1161,7 +1019,7 @@ async function registerSale({
     !Array.isArray(result)
   ) {
     throw new Error(
-      `Unexpected sale result: ${JSON.stringify(result)}`
+      "Invalid Redis sale result."
     );
   }
 
@@ -1169,22 +1027,40 @@ async function registerSale({
     result[0] ===
     "DUPLICATE"
   ) {
+    const duplicateRecord =
+      await getRecord(
+        normalizedChatId,
+        result[1]
+      );
+
+    if (
+      duplicateRecord
+    ) {
+      return {
+        duplicate: true,
+        operationId,
+        record:
+          duplicateRecord,
+      };
+    }
+
     throw new Error(
-      `Duplicate operation detected: ${String(result[1] ?? "")}`
+      "Operation already exists but its record could not be found."
     );
   }
 
   if (
-    result[0] !== "OK"
+    result[0] !==
+    "OK"
   ) {
     throw new Error(
-      `Sale transaction failed: ${JSON.stringify(result)}`
+      `Sale operation failed: ${JSON.stringify(result)}`
     );
   }
 
   return {
+    duplicate: false,
     operationId,
-
     record,
   };
 }
@@ -1194,57 +1070,63 @@ async function registerSale({
    Hash helpers
 ========================================================= */
 
-async function getHash(key) {
-  const result =
+async function getHash(
+  key
+) {
+  const value =
     await redisCommand(
       "HGETALL",
       key
     );
 
   if (
-    !Array.isArray(result)
+    !value ||
+    value.length === 0
   ) {
-    return {};
-  }
-
-  const object = {};
-
-  for (
-    let i = 0;
-    i < result.length;
-    i += 2
-  ) {
-    object[
-      result[i]
-    ] =
-      result[i + 1];
-  }
-
-  return object;
-}
-
-
-async function getRecord(
-  recordId
-) {
-  const record =
-    await getHash(
-      recordKey(recordId)
-    );
-
-  if (!record?.id) {
     return null;
   }
 
-  return {
-    ...record,
+  const result = {};
 
-    sales:
-      Number(record.sales),
+  for (
+    let i = 0;
+    i < value.length;
+    i += 2
+  ) {
+    result[value[i]] =
+      value[i + 1];
+  }
 
-    orders:
-      Number(record.orders),
-  };
+  return result;
+}
+
+
+/* =========================================================
+   Record
+========================================================= */
+
+async function getRecord(
+  chatId,
+  recordId
+) {
+  const normalizedChatId =
+    normalizeChatId(
+      chatId
+    );
+
+  const record =
+    await getHash(
+      recordKey(
+        normalizedChatId,
+        recordId
+      )
+    );
+
+  if (!record) {
+    return null;
+  }
+
+  return record;
 }
 
 
@@ -1260,20 +1142,14 @@ async function getLatestActiveRecord(
       chatId
     );
 
-  /*
-   * records:<chatId> is ZSET.
-   * Newest record = highest timestamp.
-   */
   const ids =
     await redisCommand(
       "ZREVRANGE",
-
       recordIndexKey(
         normalizedChatId
       ),
-
-      0,
-      100
+      "0",
+      "100"
     );
 
   if (
@@ -1284,27 +1160,18 @@ async function getLatestActiveRecord(
 
   for (const id of ids) {
     const record =
-      await getRecord(id);
-
-    if (!record) {
-      continue;
-    }
-
-    if (
-      String(record.chatId) !==
-      normalizedChatId
-    ) {
-      continue;
-    }
+      await getRecord(
+        normalizedChatId,
+        id
+      );
 
     if (
-      record.status !==
-      "active"
+      record &&
+      record.status ===
+        "active"
     ) {
-      continue;
+      return record;
     }
-
-    return record;
   }
 
   return null;
@@ -1312,7 +1179,43 @@ async function getLatestActiveRecord(
 
 
 /* =========================================================
-   CANCEL atomic transaction
+   Verify record signature
+========================================================= */
+
+function verifyRecordSignature(
+  record
+) {
+  if (
+    !record ||
+    !record.signature
+  ) {
+    return false;
+  }
+
+  try {
+    const expected =
+      signRecord(
+        record
+      );
+
+    return crypto.timingSafeEqual(
+      Buffer.from(
+        record.signature,
+        "utf8"
+      ),
+      Buffer.from(
+        expected,
+        "utf8"
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+
+/* =========================================================
+   CANCEL LUA
 ========================================================= */
 
 const CANCEL_SCRIPT = `
@@ -1327,291 +1230,159 @@ local auditKey = KEYS[8]
 
 local operationId = ARGV[1]
 local dateKey = ARGV[2]
+local sales = tonumber(ARGV[3])
+local orders = tonumber(ARGV[4])
+local auditJson = ARGV[5]
+local timestamp = ARGV[6]
 
-local existing =
-  redis.call(
-    'GET',
-    operationKey
-  )
+local existing = redis.call(
+  "GET",
+  operationKey
+)
 
 if existing then
-  return {
-    'DUPLICATE',
-    existing
-  }
+  return {"DUPLICATE", existing}
 end
 
 local status =
   redis.call(
-    'HGET',
+    "HGET",
     recordKey,
-    'status'
+    "status"
   )
 
-if not status then
-  return {
-    'NOT_FOUND'
-  }
+if status ~= "active" then
+  return {"NOT_ACTIVE", status or ""}
 end
-
-if status ~= 'active' then
-  return {
-    'ALREADY_CANCELLED'
-  }
-end
-
-local sales =
-  tonumber(
-    redis.call(
-      'HGET',
-      recordKey,
-      'sales'
-    ) or '0'
-  )
-
-local orders =
-  tonumber(
-    redis.call(
-      'HGET',
-      recordKey,
-      'orders'
-    ) or '0'
-  )
 
 local dailySales =
   tonumber(
     redis.call(
-      'HGET',
+      "HGET",
       dailyKey,
-      'sales'
-    ) or '0'
+      "sales"
+    ) or "0"
   )
 
 local dailyOrders =
   tonumber(
     redis.call(
-      'HGET',
+      "HGET",
       dailyKey,
-      'orders'
-    ) or '0'
+      "orders"
+    ) or "0"
   )
 
-local monthlySales =
-  tonumber(
-    redis.call(
-      'HGET',
-      monthlyKey,
-      'sales'
-    ) or '0'
-  )
-
-local monthlyOrders =
-  tonumber(
-    redis.call(
-      'HGET',
-      monthlyKey,
-      'orders'
-    ) or '0'
-  )
-
-local yearlySales =
-  tonumber(
-    redis.call(
-      'HGET',
-      yearlyKey,
-      'sales'
-    ) or '0'
-  )
-
-local yearlyOrders =
-  tonumber(
-    redis.call(
-      'HGET',
-      yearlyKey,
-      'orders'
-    ) or '0'
-  )
-
-local allTimeSales =
-  tonumber(
-    redis.call(
-      'HGET',
-      allTimeKey,
-      'sales'
-    ) or '0'
-  )
-
-local allTimeOrders =
-  tonumber(
-    redis.call(
-      'HGET',
-      allTimeKey,
-      'orders'
-    ) or '0'
-  )
-
-if
-  dailySales < sales
-  or
-  dailyOrders < orders
-then
-  return {
-    'INSUFFICIENT_DAILY'
-  }
+if dailySales < sales then
+  return {"UNDERFLOW", "daily_sales"}
 end
 
-if
-  monthlySales < sales
-  or
-  monthlyOrders < orders
-then
-  return {
-    'INSUFFICIENT_MONTHLY'
-  }
-end
-
-if
-  yearlySales < sales
-  or
-  yearlyOrders < orders
-then
-  return {
-    'INSUFFICIENT_YEARLY'
-  }
-end
-
-if
-  allTimeSales < sales
-  or
-  allTimeOrders < orders
-then
-  return {
-    'INSUFFICIENT_ALLTIME'
-  }
+if dailyOrders < orders then
+  return {"UNDERFLOW", "daily_orders"}
 end
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   dailyKey,
-  'sales',
+  "sales",
   -sales
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   dailyKey,
-  'orders',
+  "orders",
   -orders
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   monthlyKey,
-  'sales',
+  "sales",
   -sales
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   monthlyKey,
-  'orders',
+  "orders",
   -orders
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   yearlyKey,
-  'sales',
+  "sales",
   -sales
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   yearlyKey,
-  'orders',
+  "orders",
   -orders
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   allTimeKey,
-  'sales',
+  "sales",
   -sales
 )
 
 redis.call(
-  'HINCRBY',
+  "HINCRBY",
   allTimeKey,
-  'orders',
+  "orders",
   -orders
 )
 
-local finalDailySales =
+local remainingSales =
   tonumber(
     redis.call(
-      'HGET',
+      "HGET",
       dailyKey,
-      'sales'
-    ) or '0'
+      "sales"
+    ) or "0"
   )
 
-local finalDailyOrders =
-  tonumber(
-    redis.call(
-      'HGET',
-      dailyKey,
-      'orders'
-    ) or '0'
-  )
-
-if
-  finalDailySales <= 0
-  and
-  finalDailyOrders <= 0
-then
+if remainingSales <= 0 then
   redis.call(
-    'SREM',
+    "SREM",
     workingDaysKey,
     dateKey
   )
 end
 
 redis.call(
-  'HSET',
+  "HSET",
   recordKey,
-
-  'status',
-  'cancelled',
-
-  'cancelledAt',
-  ARGV[3],
-
-  'cancelOperationId',
-  operationId
+  "status",
+  "cancelled",
+  "cancelledAt",
+  timestamp
 )
 
 redis.call(
-  'LPUSH',
+  "LPUSH",
   auditKey,
-  ARGV[4]
+  auditJson
 )
 
 redis.call(
-  'LTRIM',
+  "LTRIM",
   auditKey,
   0,
   4999
 )
 
 redis.call(
-  'SET',
+  "SET",
   operationKey,
-  ARGV[5]
+  "cancelled"
 )
 
-return {
-  'OK'
-}
+return {"OK", "cancelled"}
 `;
 
 
@@ -1619,9 +1390,11 @@ return {
    Cancel latest sale
 ========================================================= */
 
-async function cancelLatestSale(
-  chatId
-) {
+async function cancelLatestSale({
+  chatId,
+  operationId =
+    crypto.randomUUID(),
+}) {
   const normalizedChatId =
     normalizeChatId(
       chatId
@@ -1634,7 +1407,7 @@ async function cancelLatestSale(
 
   if (!record) {
     throw new Error(
-      "No active sales record found"
+      "取り消せる売上がありません。"
     );
   }
 
@@ -1644,68 +1417,67 @@ async function cancelLatestSale(
     )
   ) {
     throw new Error(
-      "Record signature verification failed"
+      "売上記録の署名検証に失敗しました。"
     );
   }
 
-  const operationId =
-    createOperationId();
+  const sales =
+    positiveInteger(
+      record.sales,
+      "sales"
+    );
 
-  const cancelledAt =
-    new Date().toISOString();
+  const orders =
+    positiveInteger(
+      record.orders,
+      "orders"
+    );
 
   await assertCancelKeyTypes({
-    operationId,
+    chatId:
+      normalizedChatId,
 
-    recordId:
-      record.id,
-
-    dateKey:
-      record.dateKey,
-
-    monthKey:
-      record.monthKey,
-
-    yearKey:
-      record.yearKey,
+    record,
   });
 
   const audit = {
     operationId,
-
-    action:
-      "cancel",
-
-    recordId:
-      record.id,
-
+    type: "cancel",
     chatId:
-      record.chatId,
-
-    sales:
-      record.sales,
-
-    orders:
-      record.orders,
-
-    timestamp:
-      cancelledAt,
+      normalizedChatId,
+    recordId:
+      record.recordId,
+    dateKey:
+      record.dateKey,
+    sales,
+    orders,
+    createdAt:
+      new Date().toISOString(),
   };
 
-  audit.signature =
-    signAudit(audit);
+  const auditSignature =
+    signAudit(
+      audit
+    );
+
+  const auditJson =
+    JSON.stringify({
+      ...audit,
+      signature:
+        auditSignature,
+    });
 
   const result =
     await redisEval(
       CANCEL_SCRIPT,
-
       [
         operationKey(
           operationId
         ),
 
         recordKey(
-          record.id
+          normalizedChatId,
+          record.recordId
         ),
 
         dailyKey(
@@ -1726,19 +1498,17 @@ async function cancelLatestSale(
           record.monthKey
         ),
 
-        auditKey(),
+        auditKey(
+          normalizedChatId
+        ),
       ],
-
       [
         operationId,
-
         record.dateKey,
-
-        cancelledAt,
-
-        JSON.stringify(audit),
-
-        record.id,
+        sales,
+        orders,
+        auditJson,
+        new Date().toISOString(),
       ]
     );
 
@@ -1746,250 +1516,89 @@ async function cancelLatestSale(
     !Array.isArray(result)
   ) {
     throw new Error(
-      `Unexpected cancel result: ${JSON.stringify(result)}`
-    );
-  }
-
-  const code =
-    result[0];
-
-  if (
-    code === "DUPLICATE"
-  ) {
-    throw new Error(
-      `Duplicate cancel operation: ${String(result[1] ?? "")}`
+      "Invalid Redis cancel result."
     );
   }
 
   if (
-    code === "NOT_FOUND"
+    result[0] ===
+    "DUPLICATE"
+  ) {
+    return {
+      duplicate: true,
+      operationId,
+      record,
+    };
+  }
+
+  if (
+    result[0] ===
+    "NOT_ACTIVE"
   ) {
     throw new Error(
-      "Record was not found"
+      "この売上はすでに取り消されています。"
     );
   }
 
   if (
-    code ===
-    "ALREADY_CANCELLED"
+    result[0] ===
+    "UNDERFLOW"
   ) {
     throw new Error(
-      "This record is already cancelled"
+      "集計値が不正なため、取消を中止しました。"
     );
   }
 
   if (
-    code ===
-    "INSUFFICIENT_DAILY"
+    result[0] !==
+    "OK"
   ) {
     throw new Error(
-      "Daily aggregate is smaller than the record"
-    );
-  }
-
-  if (
-    code ===
-    "INSUFFICIENT_MONTHLY"
-  ) {
-    throw new Error(
-      "Monthly aggregate is smaller than the record"
-    );
-  }
-
-  if (
-    code ===
-    "INSUFFICIENT_YEARLY"
-  ) {
-    throw new Error(
-      "Yearly aggregate is smaller than the record"
-    );
-  }
-
-  if (
-    code ===
-    "INSUFFICIENT_ALLTIME"
-  ) {
-    throw new Error(
-      "All-time aggregate is smaller than the record"
-    );
-  }
-
-  if (code !== "OK") {
-    throw new Error(
-      `Cancel transaction failed: ${JSON.stringify(result)}`
+      `Cancel operation failed: ${JSON.stringify(result)}`
     );
   }
 
   return {
+    duplicate: false,
     operationId,
-
-    record: {
-      ...record,
-
-      status:
-        "cancelled",
-
-      cancelledAt,
-
-      cancelOperationId:
-        operationId,
-    },
+    record,
   };
 }
 
 
 /* =========================================================
-   Legacy migration
+   Aggregate readers
 ========================================================= */
 
-async function migrateLegacyCancellation() {
-  const alreadyDone =
-    await redisCommand(
-      "GET",
-      legacyFlagKey()
+async function getAggregate(
+  key
+) {
+  const data =
+    await getHash(
+      key
     );
 
-  if (alreadyDone) {
-    return false;
-  }
+  return {
+    sales:
+      Number(
+        data?.sales || 0
+      ),
 
-  const result =
-    await redisEval(
-      `
-      local flagKey = KEYS[1]
-      local dailyKey = KEYS[2]
-      local monthlyKey = KEYS[3]
-      local yearlyKey = KEYS[4]
-      local allTimeKey = KEYS[5]
-      local workingDaysKey = KEYS[6]
-
-      if redis.call('GET', flagKey) then
-        return {'ALREADY'}
-      end
-
-      redis.call(
-        'HINCRBY',
-        dailyKey,
-        'sales',
-        -ARGV[1]
-      )
-
-      redis.call(
-        'HINCRBY',
-        dailyKey,
-        'orders',
-        -ARGV[2]
-      )
-
-      redis.call(
-        'HINCRBY',
-        monthlyKey,
-        'sales',
-        -ARGV[1]
-      )
-
-      redis.call(
-        'HINCRBY',
-        monthlyKey,
-        'orders',
-        -ARGV[2]
-      )
-
-      redis.call(
-        'HINCRBY',
-        yearlyKey,
-        'sales',
-        -ARGV[1]
-      )
-
-      redis.call(
-        'HINCRBY',
-        yearlyKey,
-        'orders',
-        -ARGV[2]
-      )
-
-      redis.call(
-        'HINCRBY',
-        allTimeKey,
-        'sales',
-        -ARGV[1]
-      )
-
-      redis.call(
-        'HINCRBY',
-        allTimeKey,
-        'orders',
-        -ARGV[2]
-      )
-
-      redis.call(
-        'SREM',
-        workingDaysKey,
-        ARGV[3]
-      )
-
-      redis.call(
-        'SET',
-        flagKey,
-        '1'
-      )
-
-      return {'OK'}
-      `,
-
-      [
-        legacyFlagKey(),
-
-        dailyKey(
-          LEGACY_DATE_KEY
-        ),
-
-        monthlyKey(
-          LEGACY_MONTH_KEY
-        ),
-
-        yearlyKey(
-          LEGACY_YEAR_KEY
-        ),
-
-        allTimeKey(),
-
-        workingDaysKey(
-          LEGACY_MONTH_KEY
-        ),
-      ],
-
-      [
-        LEGACY_SALES,
-        LEGACY_ORDERS,
-        LEGACY_DATE_KEY,
-      ]
-    );
-
-  return (
-    Array.isArray(result) &&
-    result[0] === "OK"
-  );
+    orders:
+      Number(
+        data?.orders || 0
+      ),
+  };
 }
 
-
-/*
- * telegram.js expects this name.
- */
-const runLegacyMigration =
-  migrateLegacyCancellation;
-
-
-/* =========================================================
-   Report data
-========================================================= */
 
 async function getDaily(
   dateKey
 ) {
-  return getHash(
-    dailyKey(dateKey)
+  return getAggregate(
+    dailyKey(
+      dateKey
+    )
   );
 }
 
@@ -1997,8 +1606,10 @@ async function getDaily(
 async function getMonthly(
   monthKey
 ) {
-  return getHash(
-    monthlyKey(monthKey)
+  return getAggregate(
+    monthlyKey(
+      monthKey
+    )
   );
 }
 
@@ -2006,14 +1617,16 @@ async function getMonthly(
 async function getYearly(
   yearKey
 ) {
-  return getHash(
-    yearlyKey(yearKey)
+  return getAggregate(
+    yearlyKey(
+      yearKey
+    )
   );
 }
 
 
 async function getAllTime() {
-  return getHash(
+  return getAggregate(
     allTimeKey()
   );
 }
@@ -2022,15 +1635,35 @@ async function getAllTime() {
 async function getWorkingDays(
   monthKey
 ) {
-  const result =
-    await redisCommand(
-      "SMEMBERS",
-      workingDaysKey(monthKey)
+  const type =
+    await inspectKeyType(
+      workingDaysKey(
+        monthKey
+      )
     );
 
-  return Array.isArray(result)
-    ? result
-    : [];
+  if (
+    type === "none"
+  ) {
+    return 0;
+  }
+
+  if (
+    type !== "set"
+  ) {
+    throw new Error(
+      `REDIS_TYPE_MISMATCH: ${workingDaysKey(monthKey)} expected=set actual=${type}`
+    );
+  }
+
+  return Number(
+    await redisCommand(
+      "SCARD",
+      workingDaysKey(
+        monthKey
+      )
+    )
+  );
 }
 
 
@@ -2041,89 +1674,49 @@ async function getWorkingDays(
 async function getMonthlyBest(
   monthKey
 ) {
-  const workingDays =
-    await getWorkingDays(
-      monthKey
+  const prefix =
+    "moheji:delivery:daily:";
+
+  const dates =
+    await redisCommand(
+      "KEYS",
+      `${prefix}${monthKey}-*`
     );
 
   if (
-    workingDays.length === 0
+    !Array.isArray(dates) ||
+    dates.length === 0
   ) {
     return {
       sales: 0,
-      salesDate: null,
       orders: 0,
-      ordersDate: null,
     };
   }
 
-  const commands =
-    workingDays.map(
-      (dateKey) => [
-        "HGETALL",
-        dailyKey(dateKey),
-      ]
-    );
-
-  const results =
-    await redisPipeline(
-      commands
-    );
-
   let bestSales = 0;
-  let bestSalesDate = null;
-
   let bestOrders = 0;
-  let bestOrdersDate = null;
 
-  for (
-    let i = 0;
-    i < results.length;
-    i++
-  ) {
-    const raw =
-      results[i]?.result;
-
-    if (
-      !Array.isArray(raw)
-    ) {
-      continue;
-    }
-
-    const hash = {};
-
-    for (
-      let j = 0;
-      j < raw.length;
-      j += 2
-    ) {
-      hash[
-        raw[j]
-      ] =
-        raw[j + 1];
-    }
+  for (const key of dates) {
+    const data =
+      await getHash(
+        key
+      );
 
     const sales =
       Number(
-        hash.sales || 0
+        data?.sales || 0
       );
 
     const orders =
       Number(
-        hash.orders || 0
+        data?.orders || 0
       );
-
-    const dateKey =
-      workingDays[i];
 
     if (
       sales > bestSales
     ) {
       bestSales =
         sales;
-
-      bestSalesDate =
-        dateKey;
     }
 
     if (
@@ -2131,9 +1724,6 @@ async function getMonthlyBest(
     ) {
       bestOrders =
         orders;
-
-      bestOrdersDate =
-        dateKey;
     }
   }
 
@@ -2141,203 +1731,163 @@ async function getMonthlyBest(
     sales:
       bestSales,
 
-    salesDate:
-      bestSalesDate,
-
     orders:
       bestOrders,
-
-    ordersDate:
-      bestOrdersDate,
   };
 }
 
 
 /* =========================================================
-   Main report
+   Report
 ========================================================= */
 
 async function buildReport() {
-  const {
-    dateKey,
-    monthKey,
-    yearKey,
-  } =
+  const now =
     getTokyoDateParts();
 
   const [
-    today,
-    month,
-    year,
+    daily,
+    monthly,
+    yearly,
     allTime,
     workingDays,
-    best,
+    monthlyBest,
   ] =
     await Promise.all([
-      getDaily(dateKey),
+      getDaily(
+        now.dateKey
+      ),
 
-      getMonthly(monthKey),
+      getMonthly(
+        now.monthKey
+      ),
 
-      getYearly(yearKey),
+      getYearly(
+        now.yearKey
+      ),
 
       getAllTime(),
 
       getWorkingDays(
-        monthKey
+        now.monthKey
       ),
 
       getMonthlyBest(
-        monthKey
+        now.monthKey
       ),
     ]);
 
   const todaySales =
-    Number(
-      today.sales || 0
-    );
+    daily.sales;
 
   const todayOrders =
-    Number(
-      today.orders || 0
-    );
+    daily.orders;
 
-  const monthSales =
-    Number(
-      month.sales || 0
-    );
+  const monthlySales =
+    monthly.sales;
 
-  const monthOrders =
-    Number(
-      month.orders || 0
-    );
+  const monthlyOrders =
+    monthly.orders;
 
-  const yearSales =
-    Number(
-      year.sales || 0
-    );
+  const yearlySales =
+    yearly.sales;
 
-  const yearOrders =
-    Number(
-      year.orders || 0
-    );
+  const yearlyOrders =
+    yearly.orders;
 
-  const allSales =
-    Number(
-      allTime.sales || 0
-    );
+  const totalOrders =
+    allTime.orders;
 
-  const allOrders =
-    Number(
-      allTime.orders || 0
-    );
-
-  const workingDayCount =
-    workingDays.length;
-
-  const dailyAverage =
-    workingDayCount > 0
-      ? monthSales /
-        workingDayCount
-      : 0;
+  const workDays =
+    workingDays;
 
   const averageOrderValue =
-    monthOrders > 0
-      ? monthSales /
-        monthOrders
+    todayOrders > 0
+      ? Math.floor(
+          todaySales /
+            todayOrders
+        )
+      : 0;
+
+  const averageDailySales =
+    workDays > 0
+      ? Math.floor(
+          monthlySales /
+            workDays
+        )
       : 0;
 
   const achievementRate =
     MONTHLY_TARGET > 0
       ? (
-          monthSales /
+          monthlySales /
           MONTHLY_TARGET
         ) * 100
       : 0;
 
-  const remaining =
-    Math.max(
-      MONTHLY_TARGET -
-        monthSales,
-      0
+  const progressCount =
+    Math.min(
+      10,
+      Math.max(
+        0,
+        Math.floor(
+          achievementRate /
+            10
+        )
+      )
     );
 
-  return {
-    dateKey,
+  const progress =
+    "🟢".repeat(
+      progressCount
+    ) +
+    "⚪".repeat(
+      10 -
+        progressCount
+    );
 
-    monthKey,
+  const timestamp =
+    `${now.year}/${String(now.month).padStart(2, "0")}/${String(now.day).padStart(2, "0")} ` +
+    `${String(now.hour).padStart(2, "0")}:${String(now.minute).padStart(2, "0")}`;
 
-    yearKey,
-
-    today: {
-      sales:
-        todaySales,
-
-      orders:
-        todayOrders,
-    },
-
-    month: {
-      sales:
-        monthSales,
-
-      orders:
-        monthOrders,
-    },
-
-    year: {
-      sales:
-        yearSales,
-
-      orders:
-        yearOrders,
-    },
-
-    allTime: {
-      sales:
-        allSales,
-
-      orders:
-        allOrders,
-    },
-
-    workingDays:
-      workingDayCount,
-
-    dailyAverage,
-
-    averageOrderValue,
-
-    monthlyTarget:
-      MONTHLY_TARGET,
-
-    achievementRate,
-
-    remaining,
-
-    bestDailySales:
-      best.sales,
-
-    bestDailySalesDate:
-      best.salesDate,
-
-    bestDailyOrders:
-      best.orders,
-
-    bestDailyOrdersDate:
-      best.ordersDate,
-  };
+  return [
+    "🏍配達売上",
+    `💰 今日の売上 ${yen(todaySales)}`,
+    progress,
+    `📦 今日の件数 ${integer(todayOrders)}件`,
+    `💵 1件あたり ${yen(averageOrderValue)}`,
+    `📅 今月売上 ${yen(monthlySales)}`,
+    `📦 今月件数 ${integer(monthlyOrders)}件`,
+    `🗓️ 年間売上 ${yen(yearlySales)}`,
+    `📦 年間件数 ${integer(yearlyOrders)}件`,
+    `📈 平均売上／日 ${yen(averageDailySales)}`,
+    `🎯 月間目標 ${yen(MONTHLY_TARGET)}`,
+    `📊 目標達成率 ${percent(achievementRate)}`,
+    `🏆 月間最高売上 ${yen(monthlyBest.sales)}`,
+    `🏆 月間最高件数 ${integer(monthlyBest.orders)}件`,
+    `📆 稼働日数 ${integer(workDays)}日`,
+    `🛵 累計配達件数 ${integer(totalOrders)}件`,
+    `🕐 ${timestamp}`,
+    "🛵 今日も配達お疲れ様でした！",
+  ].join("\n");
 }
 
 
 /* =========================================================
-   24-month report
+   Record report
 ========================================================= */
 
 async function buildRecordReport() {
   const now =
-    new Date();
+    getTokyoDateParts();
 
-  const months = [];
+  const lines = [
+    "📚 過去24か月 売上記録",
+    "",
+  ];
+
+  const current =
+    new Date();
 
   for (
     let i = 0;
@@ -2346,122 +1896,275 @@ async function buildRecordReport() {
   ) {
     const date =
       new Date(
-        now.getFullYear(),
-        now.getMonth() - i,
-        1
+        Date.UTC(
+          current.getUTCFullYear(),
+          current.getUTCMonth() -
+            i,
+          1
+        )
       );
 
     const year =
-      date.getFullYear();
+      date.getUTCFullYear();
 
     const month =
-      String(
-        date.getMonth() + 1
-      ).padStart(2, "0");
+      date.getUTCMonth() + 1;
 
-    months.push(
-      `${year}-${month}`
+    const monthKey =
+      `${year}-${String(month).padStart(2, "0")}`;
+
+    const monthly =
+      await getMonthly(
+        monthKey
+      );
+
+    const days =
+      await getWorkingDays(
+        monthKey
+      );
+
+    const average =
+      days > 0
+        ? Math.floor(
+            monthly.sales /
+              days
+          )
+        : 0;
+
+    lines.push(
+      `${year}/${String(month).padStart(2, "0")}`,
+      `💰 ${yen(monthly.sales)}`,
+      `📦 ${integer(monthly.orders)}件`,
+      `📆 稼働 ${integer(days)}日`,
+      `📈 日平均 ${yen(average)}`,
+      ""
     );
   }
 
-  const rows =
-    await Promise.all(
-      months.map(
-        async (
-          monthKey
-        ) => {
-          const [
-            monthly,
-            workingDays,
-            best,
-          ] =
-            await Promise.all([
-              getMonthly(
-                monthKey
-              ),
-
-              getWorkingDays(
-                monthKey
-              ),
-
-              getMonthlyBest(
-                monthKey
-              ),
-            ]);
-
-          const sales =
-            Number(
-              monthly.sales || 0
-            );
-
-          const orders =
-            Number(
-              monthly.orders || 0
-            );
-
-          const days =
-            workingDays.length;
-
-          return {
-            monthKey,
-
-            sales,
-
-            orders,
-
-            workingDays:
-              days,
-
-            dailyAverage:
-              days > 0
-                ? sales / days
-                : 0,
-
-            bestDailySales:
-              best.sales,
-
-            bestDailyOrders:
-              best.orders,
-          };
-        }
-      )
-    );
-
-  return rows;
+  return lines.join("\n");
 }
 
 
 /* =========================================================
-   Audit
+   Audit logs
 ========================================================= */
 
 async function getAuditLogs(
-  limit = 50
+  chatId,
+  limit = 100
 ) {
+  const normalizedChatId =
+    normalizeChatId(
+      chatId
+    );
+
   const safeLimit =
     Math.min(
+      500,
       Math.max(
-        Number(limit) || 50,
-        1
-      ),
-      500
+        1,
+        Number(limit) || 100
+      )
     );
 
-  const result =
-    await redisCommand(
-      "LRANGE",
+  const type =
+    await inspectKeyType(
+      auditKey(
+        normalizedChatId
+      )
+    );
 
-      auditKey(),
+  if (
+    type === "none"
+  ) {
+    return [];
+  }
 
-      0,
+  if (
+    type !== "list"
+  ) {
+    throw new Error(
+      `REDIS_TYPE_MISMATCH: ${auditKey(normalizedChatId)} expected=list actual=${type}`
+    );
+  }
 
+  return redisCommand(
+    "LRANGE",
+    auditKey(
+      normalizedChatId
+    ),
+    "0",
+    String(
       safeLimit - 1
+    )
+  );
+}
+
+
+/* =========================================================
+   Legacy migration
+========================================================= */
+
+async function migrateLegacyCancellation(
+  chatId
+) {
+  const normalizedChatId =
+    normalizeChatId(
+      chatId
     );
 
-  return Array.isArray(result)
-    ? result
-    : [];
+  const flagKey =
+    legacyKey(
+      normalizedChatId
+    );
+
+  const existing =
+    await redisCommand(
+      "GET",
+      flagKey
+    );
+
+  if (existing) {
+    return {
+      migrated: false,
+      alreadyDone: true,
+    };
+  }
+
+  const date =
+    getTokyoDateParts(
+      new Date(
+        `${LEGACY_DATE}T00:00:00+09:00`
+      )
+    );
+
+  await assertSaleKeyTypes({
+    chatId:
+      normalizedChatId,
+
+    dateKey:
+      date.dateKey,
+
+    monthKey:
+      date.monthKey,
+
+    yearKey:
+      date.yearKey,
+  });
+
+  await redisPipeline([
+    [
+      "HINCRBY",
+      dailyKey(
+        LEGACY_DATE
+      ),
+      "sales",
+      String(
+        LEGACY_SALES
+      ),
+    ],
+
+    [
+      "HINCRBY",
+      dailyKey(
+        LEGACY_DATE
+      ),
+      "orders",
+      String(
+        LEGACY_ORDERS
+      ),
+    ],
+
+    [
+      "HINCRBY",
+      monthlyKey(
+        "2026-10"
+      ),
+      "sales",
+      String(
+        LEGACY_SALES
+      ),
+    ],
+
+    [
+      "HINCRBY",
+      monthlyKey(
+        "2026-10"
+      ),
+      "orders",
+      String(
+        LEGACY_ORDERS
+      ),
+    ],
+
+    [
+      "HINCRBY",
+      yearlyKey(
+        "2026"
+      ),
+      "sales",
+      String(
+        LEGACY_SALES
+      ),
+    ],
+
+    [
+      "HINCRBY",
+      yearlyKey(
+        "2026"
+      ),
+      "orders",
+      String(
+        LEGACY_ORDERS
+      ),
+    ],
+
+    [
+      "HINCRBY",
+      allTimeKey(),
+      "sales",
+      String(
+        LEGACY_SALES
+      ),
+    ],
+
+    [
+      "HINCRBY",
+      allTimeKey(),
+      "orders",
+      String(
+        LEGACY_ORDERS
+      ),
+    ],
+
+    [
+      "SADD",
+      workingDaysKey(
+        "2026-10"
+      ),
+      LEGACY_DATE,
+    ],
+
+    [
+      "SET",
+      flagKey,
+      "done",
+    ],
+  ]);
+
+  return {
+    migrated: true,
+    alreadyDone: false,
+  };
 }
+
+
+/*
+  telegram.js currently imports runLegacyMigration.
+  Keep a compatibility name.
+*/
+const runLegacyMigration =
+  migrateLegacyCancellation;
 
 
 /* =========================================================
@@ -2476,44 +2179,47 @@ async function diagnoseSaleRedis(
       chatId
     );
 
-  const {
-    dateKey,
-    monthKey,
-    yearKey,
-  } =
+  const now =
     getTokyoDateParts();
 
   const keys = [
-    dailyKey(dateKey),
+    dailyKey(
+      now.dateKey
+    ),
 
-    monthlyKey(monthKey),
+    monthlyKey(
+      now.monthKey
+    ),
 
-    yearlyKey(yearKey),
+    yearlyKey(
+      now.yearKey
+    ),
 
     allTimeKey(),
 
     workingDaysKey(
-      monthKey
+      now.monthKey
     ),
 
     recordIndexKey(
       normalizedChatId
     ),
 
-    auditKey(),
+    auditKey(
+      normalizedChatId
+    ),
   ];
 
-  const types =
-    await inspectKeyTypes(
-      keys
-    );
+  const result = {};
 
-  return {
-    dateKey,
-    monthKey,
-    yearKey,
-    keys: types,
-  };
+  for (const key of keys) {
+    result[key] =
+      await inspectKeyType(
+        key
+      );
+  }
+
+  return result;
 }
 
 
@@ -2529,6 +2235,7 @@ export {
   buildRecordReport,
 
   runLegacyMigration,
+  migrateLegacyCancellation,
 
   getAuditLogs,
 
@@ -2551,4 +2258,5 @@ export {
 
   yen,
   integer,
+  percent,
 };
