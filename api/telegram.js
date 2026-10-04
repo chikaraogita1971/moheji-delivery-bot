@@ -33,6 +33,11 @@ async function redis(command, ...args) {
   }
 
   const data = await response.json();
+
+  if (data.error) {
+    throw new Error(`Redis command error: ${data.error}`);
+  }
+
   return data.result;
 }
 
@@ -77,10 +82,6 @@ function getTokyoDateInfo(date = new Date()) {
   const month = Number(obj.month);
   const day = Number(obj.day);
 
-  const dateKey = `${year}-${pad2(month)}-${pad2(day)}`;
-  const monthKey = `${year}-${pad2(month)}`;
-  const yearKey = `${year}`;
-
   return {
     year,
     month,
@@ -88,20 +89,7 @@ function getTokyoDateInfo(date = new Date()) {
     hour: Number(obj.hour),
     minute: Number(obj.minute),
     second: Number(obj.second),
-    dateKey,
-    monthKey,
-    yearKey,
-  };
-}
-
-function getDateInfoFromDateKey(dateKey) {
-  const [year, month, day] = String(dateKey).split("-").map(Number);
-
-  return {
-    year,
-    month,
-    day,
-    dateKey,
+    dateKey: `${year}-${pad2(month)}-${pad2(day)}`,
     monthKey: `${year}-${pad2(month)}`,
     yearKey: `${year}`,
   };
@@ -136,8 +124,16 @@ function recordKey(chatId, recordId) {
 }
 
 function makeRecordId() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
 }
+
+/*
+ * ------------------------------------------------------------
+ * Redis helpers
+ * ------------------------------------------------------------
+ */
 
 async function getHash(key) {
   const result = await redis("HGETALL", key);
@@ -180,11 +176,22 @@ async function setHash(key, values) {
 }
 
 async function incrementHash(key, field, amount) {
-  await redis("HINCRBY", key, field, String(amount));
+  await redis(
+    "HINCRBY",
+    key,
+    field,
+    String(amount)
+  );
 }
 
 async function getZRangeWithScores(key) {
-  const result = await redis("ZRANGE", key, "0", "-1", "WITHSCORES");
+  const result = await redis(
+    "ZRANGE",
+    key,
+    "0",
+    "-1",
+    "WITHSCORES"
+  );
 
   if (!Array.isArray(result)) {
     return [];
@@ -201,6 +208,48 @@ async function getZRangeWithScores(key) {
 
   return output;
 }
+
+/*
+ * Redis SCAN
+ *
+ * 大量のKEYSを一気に取得しない。
+ */
+async function scanKeys(pattern) {
+  let cursor = "0";
+  const keys = [];
+
+  do {
+    const result = await redis(
+      "SCAN",
+      cursor,
+      "MATCH",
+      pattern,
+      "COUNT",
+      "500"
+    );
+
+    if (
+      !Array.isArray(result) ||
+      result.length < 2
+    ) {
+      break;
+    }
+
+    cursor = String(result[0]);
+
+    if (Array.isArray(result[1])) {
+      keys.push(...result[1]);
+    }
+  } while (cursor !== "0");
+
+  return keys;
+}
+
+/*
+ * ------------------------------------------------------------
+ * Telegram
+ * ------------------------------------------------------------
+ */
 
 async function sendTelegramMessage(chatId, text) {
   const url =
@@ -220,7 +269,9 @@ async function sendTelegramMessage(chatId, text) {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`Telegram sendMessage error: ${body}`);
+    throw new Error(
+      `Telegram sendMessage error: ${body}`
+    );
   }
 }
 
@@ -242,9 +293,17 @@ async function sendTelegramPhoto(chatId, caption) {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`Telegram sendPhoto error: ${body}`);
+    throw new Error(
+      `Telegram sendPhoto error: ${body}`
+    );
   }
 }
+
+/*
+ * ------------------------------------------------------------
+ * Basic data
+ * ------------------------------------------------------------
+ */
 
 async function getDaily(dateKey) {
   return await getHash(dailyKey(dateKey));
@@ -271,27 +330,247 @@ async function getWorkingDays(monthKeyValue) {
   return number(value);
 }
 
+/*
+ * ------------------------------------------------------------
+ * Repair / reconciliation
+ * ------------------------------------------------------------
+ *
+ * 重要：
+ *
+ * 1. daily の売上は変更しない
+ * 2. month の sales / orders は変更しない
+ * 3. year は month の合計から再構築
+ * 4. alltime は year の合計から再構築
+ * 5. monthly best は daily から再計算
+ *
+ * これにより、
+ *
+ * 今日 17,314 / 20
+ * 今月 57,428 / 62
+ * 年間 271,082 / 253
+ *
+ * の既存データを勝手に削除せず、
+ * ロールアップだけを正しい状態へ戻す。
+ */
+
+async function repairRollups() {
+  const monthKeys = await scanKeys(
+    "moheji:delivery:month:*"
+  );
+
+  const yearlyTotals = {};
+  const monthlyBest = {};
+
+  for (const key of monthKeys) {
+    const match = key.match(
+      /^moheji:delivery:month:(\d{4})-(\d{2})$/
+    );
+
+    if (!match) {
+      continue;
+    }
+
+    const year = match[1];
+    const month = match[2];
+    const monthValue = await getHash(key);
+
+    const sales = number(monthValue.sales);
+    const orders = number(monthValue.orders);
+
+    if (!yearlyTotals[year]) {
+      yearlyTotals[year] = {
+        sales: 0,
+        orders: 0,
+      };
+    }
+
+    yearlyTotals[year].sales += sales;
+    yearlyTotals[year].orders += orders;
+
+    /*
+     * 月間最高記録を日別データから探す。
+     */
+    const dailyKeys = await scanKeys(
+      `moheji:delivery:daily:${year}-${month}-*`
+    );
+
+    let bestSales = number(
+      monthValue.bestSales
+    );
+
+    let bestOrders = number(
+      monthValue.bestOrders
+    );
+
+    for (const dailyRedisKey of dailyKeys) {
+      const dailyValue =
+        await getHash(dailyRedisKey);
+
+      const dailySales =
+        number(dailyValue.sales);
+
+      const dailyOrders =
+        number(dailyValue.orders);
+
+      if (dailySales > bestSales) {
+        bestSales = dailySales;
+      }
+
+      if (dailyOrders > bestOrders) {
+        bestOrders = dailyOrders;
+      }
+    }
+
+    monthlyBest[`${year}-${month}`] = {
+      bestSales,
+      bestOrders,
+    };
+  }
+
+  /*
+   * 既存値をバックアップ。
+   *
+   * daily sales / orders は変更しないので、
+   * ここでは修正対象だけ保存する。
+   */
+  const backup = {
+    createdAt: new Date().toISOString(),
+    allTime: await getAllTime(),
+    years: {},
+    months: {},
+  };
+
+  const yearKeys = await scanKeys(
+    "moheji:delivery:year:*"
+  );
+
+  for (const key of yearKeys) {
+    const match = key.match(
+      /^moheji:delivery:year:(\d{4})$/
+    );
+
+    if (!match) {
+      continue;
+    }
+
+    backup.years[match[1]] =
+      await getHash(key);
+  }
+
+  for (const [key, value] of Object.entries(
+    monthlyBest
+  )) {
+    backup.months[key] =
+      await getMonth(key);
+  }
+
+  const backupKey =
+    `moheji:delivery:repair-backup:${Date.now()}`;
+
+  await redis(
+    "SET",
+    backupKey,
+    JSON.stringify(backup)
+  );
+
+  /*
+   * 年次を月次から再構築
+   */
+  for (const [year, total] of Object.entries(
+    yearlyTotals
+  )) {
+    await setHash(
+      yearKey(year),
+      {
+        sales: total.sales,
+        orders: total.orders,
+      }
+    );
+  }
+
+  /*
+   * 月間最高値を修正
+   */
+  for (const [key, best] of Object.entries(
+    monthlyBest
+  )) {
+    await setHash(
+      monthKey(key),
+      {
+        bestSales: best.bestSales,
+        bestOrders: best.bestOrders,
+      }
+    );
+  }
+
+  /*
+   * 累計を年間合計から再構築
+   */
+  let allTimeSales = 0;
+  let allTimeOrders = 0;
+
+  for (const total of Object.values(
+    yearlyTotals
+  )) {
+    allTimeSales += number(total.sales);
+    allTimeOrders += number(total.orders);
+  }
+
+  await setHash(
+    allTimeKey(),
+    {
+      sales: allTimeSales,
+      orders: allTimeOrders,
+    }
+  );
+
+  return {
+    backupKey,
+    yearlyTotals,
+    allTime: {
+      sales: allTimeSales,
+      orders: allTimeOrders,
+    },
+  };
+}
+
+/*
+ * ------------------------------------------------------------
+ * Working days
+ * ------------------------------------------------------------
+ */
+
 async function incrementWorkingDayIfNeeded(
   dateKey,
   monthKeyValue
 ) {
   const daily = await getDaily(dateKey);
 
-  const alreadyCounted = number(daily.workingDayCounted);
+  const alreadyCounted =
+    number(daily.workingDayCounted);
 
   if (alreadyCounted === 1) {
     return;
   }
 
-  await setHash(dailyKey(dateKey), {
-    workingDayCounted: 1,
-  });
+  await setHash(
+    dailyKey(dateKey),
+    {
+      workingDayCounted: 1,
+    }
+  );
 
   await redis(
     "INCR",
     workingDaysKey(monthKeyValue)
   );
 }
+
+/*
+ * ------------------------------------------------------------
+ * Sale records
+ * ------------------------------------------------------------
+ */
 
 async function saveSaleRecord({
   chatId,
@@ -367,7 +646,8 @@ async function getAllRecords(chatId) {
 }
 
 async function getLatestActiveRecord(chatId) {
-  const records = await getAllRecords(chatId);
+  const records =
+    await getAllRecords(chatId);
 
   for (const record of records) {
     if (String(record.cancelled) !== "1") {
@@ -399,19 +679,37 @@ function formatRecordDate(createdAt) {
     }
   }
 
-  return `${obj.year}/${obj.month}/${obj.day} ${obj.hour}:${obj.minute}`;
+  return (
+    `${obj.year}/${obj.month}/${obj.day} ` +
+    `${obj.hour}:${obj.minute}`
+  );
 }
+
+/*
+ * ------------------------------------------------------------
+ * Report helpers
+ * ------------------------------------------------------------
+ */
 
 function getAverage(sales, workingDays) {
   if (workingDays <= 0) {
     return 0;
   }
 
-  return Math.floor(sales / workingDays);
+  return Math.floor(
+    sales / workingDays
+  );
 }
 
+/*
+ * 月間最高記録は Redis の best フィールドを使う。
+ *
+ * repairRollups() によって日別データから
+ * 既存値が復元される。
+ */
 async function getMonthlyBest(monthKeyValue) {
-  const month = await getMonth(monthKeyValue);
+  const month =
+    await getMonth(monthKeyValue);
 
   return {
     bestSales: number(month.bestSales),
@@ -419,11 +717,19 @@ async function getMonthlyBest(monthKeyValue) {
   };
 }
 
-async function updateDailyBest(dateKey, sales, orders) {
-  const daily = await getDaily(dateKey);
+async function updateDailyBest(
+  dateKey,
+  sales,
+  orders
+) {
+  const daily =
+    await getDaily(dateKey);
 
-  const currentSales = number(daily.sales);
-  const currentOrders = number(daily.orders);
+  const currentSales =
+    number(daily.sales);
+
+  const currentOrders =
+    number(daily.orders);
 
   const bestSales = Math.max(
     number(daily.bestSales),
@@ -435,12 +741,15 @@ async function updateDailyBest(dateKey, sales, orders) {
     currentOrders
   );
 
-  await setHash(dailyKey(dateKey), {
-    sales: currentSales,
-    orders: currentOrders,
-    bestSales,
-    bestOrders,
-  });
+  await setHash(
+    dailyKey(dateKey),
+    {
+      sales: currentSales,
+      orders: currentOrders,
+      bestSales,
+      bestOrders,
+    }
+  );
 
   return {
     bestSales,
@@ -453,7 +762,8 @@ async function updateMonthlyBest(
   sales,
   orders
 ) {
-  const month = await getMonth(monthKeyValue);
+  const month =
+    await getMonth(monthKeyValue);
 
   const bestSales = Math.max(
     number(month.bestSales),
@@ -465,17 +775,31 @@ async function updateMonthlyBest(
     orders
   );
 
-  await setHash(monthKey(monthKeyValue), {
-    bestSales,
-    bestOrders,
-  });
+  await setHash(
+    monthKey(monthKeyValue),
+    {
+      bestSales,
+      bestOrders,
+    }
+  );
 }
 
-async function processSales(chatId, sales, orders) {
-  const now = getTokyoDateInfo();
+/*
+ * ------------------------------------------------------------
+ * /sales
+ * ------------------------------------------------------------
+ */
+
+async function processSales(
+  chatId,
+  sales,
+  orders
+) {
+  const now =
+    getTokyoDateInfo();
 
   /*
-   * 個別レコードを作成
+   * 個別レコード
    */
   await saveSaleRecord({
     chatId,
@@ -555,9 +879,10 @@ async function processSales(chatId, sales, orders) {
   );
 
   /*
-   * ベスト記録
+   * ベスト
    */
-  const daily = await getDaily(now.dateKey);
+  const daily =
+    await getDaily(now.dateKey);
 
   await updateDailyBest(
     now.dateKey,
@@ -574,38 +899,69 @@ async function processSales(chatId, sales, orders) {
   return await buildReport(now);
 }
 
+/*
+ * ------------------------------------------------------------
+ * Report
+ * ------------------------------------------------------------
+ */
+
 async function buildReport(now) {
-  const daily = await getDaily(now.dateKey);
-  const month = await getMonth(now.monthKey);
-  const year = await getYear(now.yearKey);
-  const allTime = await getAllTime();
+  const daily =
+    await getDaily(now.dateKey);
+
+  const month =
+    await getMonth(now.monthKey);
+
+  const year =
+    await getYear(now.yearKey);
+
+  const allTime =
+    await getAllTime();
 
   const workingDays =
     await getWorkingDays(now.monthKey);
 
-  const todaySales = number(daily.sales);
-  const todayOrders = number(daily.orders);
+  const todaySales =
+    number(daily.sales);
 
-  const monthlySales = number(month.sales);
-  const monthlyOrders = number(month.orders);
+  const todayOrders =
+    number(daily.orders);
 
-  const yearlySales = number(year.sales);
-  const yearlyOrders = number(year.orders);
+  const monthlySales =
+    number(month.sales);
+
+  const monthlyOrders =
+    number(month.orders);
+
+  const yearlySales =
+    number(year.sales);
+
+  const yearlyOrders =
+    number(year.orders);
 
   const averageSales =
-    getAverage(monthlySales, workingDays);
+    getAverage(
+      monthlySales,
+      workingDays
+    );
 
   const achievement =
     MONTHLY_TARGET > 0
       ? Math.floor(
-          (monthlySales / MONTHLY_TARGET) * 100
+          (monthlySales /
+            MONTHLY_TARGET) *
+            100
         )
       : 0;
 
-  const bestSales = number(month.bestSales);
-  const bestOrders = number(month.bestOrders);
+  const bestSales =
+    number(month.bestSales);
 
-  const totalOrders = number(allTime.orders);
+  const bestOrders =
+    number(month.bestOrders);
+
+  const totalOrders =
+    number(allTime.orders);
 
   const timestamp =
     `${now.year}年${now.month}月${now.day}日 ` +
@@ -618,7 +974,10 @@ async function buildReport(now) {
 💵 1件あたり　${
       todayOrders > 0
         ? formatYen(
-            Math.floor(todaySales / todayOrders)
+            Math.floor(
+              todaySales /
+                todayOrders
+            )
           )
         : "0"
     }円
@@ -638,6 +997,12 @@ async function buildReport(now) {
   );
 }
 
+/*
+ * ------------------------------------------------------------
+ * /cancel
+ * ------------------------------------------------------------
+ */
+
 async function processCancel(chatId) {
   const record =
     await getLatestActiveRecord(chatId);
@@ -651,28 +1016,41 @@ async function processCancel(chatId) {
     return;
   }
 
-  const sales = number(record.sales);
-  const orders = number(record.orders);
+  const sales =
+    number(record.sales);
 
-  const dateKey = record.dateKey;
-  const monthKeyValue = record.monthKey;
-  const yearKeyValue = record.yearKey;
+  const orders =
+    number(record.orders);
+
+  const dateKey =
+    record.dateKey;
+
+  const monthKeyValue =
+    record.monthKey;
+
+  const yearKeyValue =
+    record.yearKey;
 
   /*
-   * 個別レコードを先にキャンセル済みにする
+   * 元レコードの日付を使用。
+   *
+   * 23:59に売上登録
+   * ↓
+   * 00:01に/cancel
+   *
+   * でも前日のdailyから減算される。
    */
+
   await setHash(
     recordKey(chatId, record.id),
     {
       cancelled: "1",
-      cancelledAt: String(Date.now()),
+      cancelledAt: String(
+        Date.now()
+      ),
     }
   );
 
-  /*
-   * 元の売上日を使用する。
-   * そのため日付をまたいでも正しい日次から減算される。
-   */
   await incrementHash(
     dailyKey(dateKey),
     "sales",
@@ -724,38 +1102,87 @@ async function processCancel(chatId) {
   /*
    * 負数防止
    */
-  const daily = await getDaily(dateKey);
-  const month = await getMonth(monthKeyValue);
-  const year = await getYear(yearKeyValue);
-  const allTime = await getAllTime();
+  const daily =
+    await getDaily(dateKey);
 
-  await setHash(dailyKey(dateKey), {
-    sales: Math.max(0, number(daily.sales)),
-    orders: Math.max(0, number(daily.orders)),
-  });
+  const month =
+    await getMonth(monthKeyValue);
 
-  await setHash(monthKey(monthKeyValue), {
-    sales: Math.max(0, number(month.sales)),
-    orders: Math.max(0, number(month.orders)),
-  });
+  const year =
+    await getYear(yearKeyValue);
 
-  await setHash(yearKey(yearKeyValue), {
-    sales: Math.max(0, number(year.sales)),
-    orders: Math.max(0, number(year.orders)),
-  });
+  const allTime =
+    await getAllTime();
 
-  await setHash(allTimeKey(), {
-    sales: Math.max(0, number(allTime.sales)),
-    orders: Math.max(0, number(allTime.orders)),
-  });
+  await setHash(
+    dailyKey(dateKey),
+    {
+      sales: Math.max(
+        0,
+        number(daily.sales)
+      ),
+      orders: Math.max(
+        0,
+        number(daily.orders)
+      ),
+    }
+  );
+
+  await setHash(
+    monthKey(monthKeyValue),
+    {
+      sales: Math.max(
+        0,
+        number(month.sales)
+      ),
+      orders: Math.max(
+        0,
+        number(month.orders)
+      ),
+    }
+  );
+
+  await setHash(
+    yearKey(yearKeyValue),
+    {
+      sales: Math.max(
+        0,
+        number(year.sales)
+      ),
+      orders: Math.max(
+        0,
+        number(year.orders)
+      ),
+    }
+  );
+
+  await setHash(
+    allTimeKey(),
+    {
+      sales: Math.max(
+        0,
+        number(allTime.sales)
+      ),
+      orders: Math.max(
+        0,
+        number(allTime.orders)
+      ),
+    }
+  );
 
   /*
-   * 元の売上日が現在の日付ならレポートを返す。
-   * 過去日の場合も、現在日時基準のレポートを表示する。
+   * キャンセル後にロールアップを再同期。
+   *
+   * ただし daily / month の売上そのものは
+   * 再計算して上書きしない。
    */
-  const now = getTokyoDateInfo();
+  await repairRollups();
 
-  const report = await buildReport(now);
+  const now =
+    getTokyoDateInfo();
+
+  const report =
+    await buildReport(now);
 
   await sendTelegramMessage(
     chatId,
@@ -769,28 +1196,48 @@ ${report}`
   );
 }
 
+/*
+ * ------------------------------------------------------------
+ * /record
+ * ------------------------------------------------------------
+ */
+
 async function processRecord(chatId) {
-  const now = getTokyoDateInfo();
+  const now =
+    getTokyoDateInfo();
+
+  /*
+   * まず現在のロールアップを修正。
+   *
+   * daily / month の sales / orders は触らず、
+   * year / alltime / monthly best のみ再構築。
+   */
+  await repairRollups();
 
   /*
    * 月間記録
    */
   const monthlyParts = [];
 
-  /*
-   * 現在月から最大24ヶ月を見る
-   */
-  for (let offset = 0; offset < 24; offset++) {
-    const date = new Date(
-      Date.UTC(
-        now.year,
-        now.month - 1 - offset,
-        1
-      )
-    );
+  for (
+    let offset = 0;
+    offset < 24;
+    offset++
+  ) {
+    const date =
+      new Date(
+        Date.UTC(
+          now.year,
+          now.month - 1 - offset,
+          1
+        )
+      );
 
-    const year = date.getUTCFullYear();
-    const month = date.getUTCMonth() + 1;
+    const year =
+      date.getUTCFullYear();
+
+    const month =
+      date.getUTCMonth() + 1;
 
     const key =
       `${year}-${pad2(month)}`;
@@ -798,8 +1245,11 @@ async function processRecord(chatId) {
     const monthData =
       await getMonth(key);
 
-    const sales = number(monthData.sales);
-    const orders = number(monthData.orders);
+    const sales =
+      number(monthData.sales);
+
+    const orders =
+      number(monthData.orders);
 
     if (
       sales === 0 &&
@@ -831,7 +1281,8 @@ async function processRecord(chatId) {
   const records =
     await getAllRecords(chatId);
 
-  const history = records.slice(0, 30);
+  const history =
+    records.slice(0, 30);
 
   const historyParts = [];
 
@@ -850,30 +1301,39 @@ ${status}`
   }
 
   /*
-   * 有効な個別レコードの合計
-   *
-   * ここは読み取り専用。
-   * Redisの集計値は変更しない。
+   * 有効個別履歴の合計
    */
   let activeSalesTotal = 0;
   let activeOrdersTotal = 0;
 
   for (const record of records) {
-    if (String(record.cancelled) === "1") {
+    if (
+      String(record.cancelled) === "1"
+    ) {
       continue;
     }
 
-    activeSalesTotal += number(record.sales);
-    activeOrdersTotal += number(record.orders);
+    activeSalesTotal +=
+      number(record.sales);
+
+    activeOrdersTotal +=
+      number(record.orders);
   }
 
   /*
-   * 現在のRedis集計
+   * 現在のRedis
    */
-  const daily = await getDaily(now.dateKey);
-  const month = await getMonth(now.monthKey);
-  const year = await getYear(now.yearKey);
-  const allTime = await getAllTime();
+  const daily =
+    await getDaily(now.dateKey);
+
+  const month =
+    await getMonth(now.monthKey);
+
+  const year =
+    await getYear(now.yearKey);
+
+  const allTime =
+    await getAllTime();
 
   const auditParts = [
 `🔎 現在値と個別履歴の照合
@@ -899,37 +1359,59 @@ ${status}`
 📦 ${formatNumber(allTime.orders)}件`
   ];
 
-  let text = "📊 月間記録\n\n";
+  let text =
+    "📊 月間記録\n\n";
 
   if (monthlyParts.length > 0) {
-    text += monthlyParts.join("\n\n");
+    text +=
+      monthlyParts.join("\n\n");
   } else {
-    text += "記録がありません。";
+    text +=
+      "記録がありません。";
   }
 
-  text += "\n\n━━━━━━━━━━━━━━\n";
-  text += "📋 個別売上履歴\n\n";
+  text +=
+    "\n\n━━━━━━━━━━━━━━\n";
+
+  text +=
+    "📋 個別売上履歴\n\n";
 
   if (historyParts.length > 0) {
-    text += historyParts.join("\n\n");
+    text +=
+      historyParts.join("\n\n");
   } else {
-    text += "個別売上履歴がありません。\n";
+    text +=
+      "個別売上履歴がありません。\n";
   }
 
-  text += "\n\n━━━━━━━━━━━━━━\n";
-  text += auditParts.join("\n\n");
+  text +=
+    "\n\n━━━━━━━━━━━━━━\n";
+
+  text +=
+    auditParts.join("\n\n");
 
   text +=
     `\n\n🕐 ${now.year}年${now.month}月${now.day}日 ` +
     `${pad2(now.hour)}:${pad2(now.minute)}`;
 
-  await sendTelegramMessage(chatId, text);
+  await sendTelegramMessage(
+    chatId,
+    text
+  );
 }
 
-function parseCommand(text) {
-  const trimmed = String(text || "").trim();
+/*
+ * ------------------------------------------------------------
+ * Command parser
+ * ------------------------------------------------------------
+ */
 
-  const parts = trimmed.split(/\s+/);
+function parseCommand(text) {
+  const trimmed =
+    String(text || "").trim();
+
+  const parts =
+    trimmed.split(/\s+/);
 
   const command =
     (parts[0] || "")
@@ -942,12 +1424,22 @@ function parseCommand(text) {
   };
 }
 
+/*
+ * ------------------------------------------------------------
+ * Telegram update
+ * ------------------------------------------------------------
+ */
+
 async function handleUpdate(update) {
-  if (!update || !update.message) {
+  if (
+    !update ||
+    !update.message
+  ) {
     return;
   }
 
-  const message = update.message;
+  const message =
+    update.message;
 
   const chatId =
     message.chat &&
@@ -966,11 +1458,13 @@ async function handleUpdate(update) {
     return;
   }
 
-  const { command, args } =
-    parseCommand(text);
+  const {
+    command,
+    args,
+  } = parseCommand(text);
 
   /*
-   * コマンドは3つだけ
+   * /sales
    */
   if (command === "/sales") {
     if (args.length !== 2) {
@@ -981,14 +1475,19 @@ async function handleUpdate(update) {
       return;
     }
 
-    const sales = Number(args[0]);
-    const orders = Number(args[1]);
+    const sales =
+      Number(args[0]);
+
+    const orders =
+      Number(args[1]);
 
     if (
       !Number.isFinite(sales) ||
       !Number.isFinite(orders) ||
       sales < 0 ||
-      orders < 0
+      orders < 0 ||
+      !Number.isInteger(sales) ||
+      !Number.isInteger(orders)
     ) {
       await sendTelegramMessage(
         chatId,
@@ -1012,6 +1511,9 @@ async function handleUpdate(update) {
     return;
   }
 
+  /*
+   * /cancel
+   */
   if (command === "/cancel") {
     if (args.length !== 0) {
       await sendTelegramMessage(
@@ -1025,6 +1527,9 @@ async function handleUpdate(update) {
     return;
   }
 
+  /*
+   * /record
+   */
   if (command === "/record") {
     if (args.length !== 0) {
       await sendTelegramMessage(
@@ -1042,6 +1547,12 @@ async function handleUpdate(update) {
    * その他のコマンドは何もしない
    */
 }
+
+/*
+ * ------------------------------------------------------------
+ * Vercel handler
+ * ------------------------------------------------------------
+ */
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -1063,7 +1574,7 @@ export default async function handler(req, res) {
     );
 
     /*
-     * エラー時にRedisを追加変更しない。
+     * エラー時に追加のRedis変更をしない。
      */
     return res.status(500).json({
       ok: false,
