@@ -1620,3 +1620,460 @@ module.exports = async function handler(req, res) {
         true,
     };
   }
+  // =========================================================
+  // /record
+  // =========================================================
+
+  async function processRecord(
+    dateInfo
+  ) {
+    const monthKeys = [];
+
+    let currentYear =
+      Number(
+        dateInfo.year
+      );
+
+    let currentMonth =
+      Number(
+        dateInfo.month
+      );
+
+    /*
+     * 過去24か月
+     */
+
+    for (
+      let i = 0;
+      i < 24;
+      i++
+    ) {
+      const mm =
+        String(
+          currentMonth
+        ).padStart(
+          2,
+          "0"
+        );
+
+      monthKeys.push(
+        `${currentYear}-${mm}`
+      );
+
+      currentMonth--;
+
+      if (
+        currentMonth === 0
+      ) {
+        currentMonth = 12;
+        currentYear--;
+      }
+    }
+
+    const records = [];
+
+    for (
+      const ym
+        of monthKeys
+    ) {
+      const [
+        recordYear,
+        recordMonth,
+      ] =
+        ym.split("-");
+
+      const monthly =
+        await getMonthlyValues(
+          ym
+        );
+
+      if (
+        monthly.sales === 0 &&
+        monthly.orders === 0
+      ) {
+        continue;
+      }
+
+      const monthlyBest =
+        await getMonthlyBest(
+          ym
+        );
+
+      records.push(
+        `${recordYear}年${Number(recordMonth)}月\n` +
+
+        `📅 月間売上 ${monthly.sales.toLocaleString()}円\n` +
+
+        `📦 月間件数 ${monthly.orders.toLocaleString()}件\n` +
+
+        `🏆 月間最高売上 ${monthlyBest.maxDailySales.toLocaleString()}円\n` +
+
+        `🏆 月間最高件数 ${monthlyBest.maxDailyOrders.toLocaleString()}件`
+      );
+    }
+
+    let recordMessage =
+      "📊 月間記録\n\n";
+
+    if (
+      records.length === 0
+    ) {
+      recordMessage +=
+        "まだ月間記録がありません。";
+    } else {
+      recordMessage +=
+        records.join(
+          "\n\n"
+        );
+    }
+
+    recordMessage +=
+      `\n\n🕐 ${dateInfo.displayDate}`;
+
+    return recordMessage;
+  }
+
+  // =========================================================
+  // Main
+  // =========================================================
+
+  try {
+    // =======================================================
+    // Telegram update
+    // =======================================================
+
+    const rawBody =
+      typeof req.body === "string"
+        ? req.body
+        : JSON.stringify(
+            req.body || {}
+          );
+
+    const body =
+      JSON.parse(
+        rawBody
+      );
+
+    // =======================================================
+    // 二重処理防止
+    // =======================================================
+
+    const updateId =
+      body.update_id;
+
+    if (
+      updateId !== undefined &&
+      updateId !== null
+    ) {
+      const processedKey =
+        `moheji:telegram:processed:${updateId}`;
+
+      const result =
+        await redisCommand([
+          "SET",
+          processedKey,
+          "1",
+          "NX",
+          "EX",
+          "86400",
+        ]);
+
+      if (
+        result !== "OK"
+      ) {
+        console.log(
+          `Duplicate update ignored: ${updateId}`
+        );
+
+        return res
+          .status(200)
+          .send("OK");
+      }
+    }
+
+    // =======================================================
+    // Message check
+    // =======================================================
+
+    if (
+      !body.message
+    ) {
+      return res
+        .status(200)
+        .send("OK");
+    }
+
+    const message =
+      body.message;
+
+    const chatId =
+      message.chat?.id;
+
+    const text =
+      (
+        message.text ||
+        ""
+      ).trim();
+
+    if (
+      !chatId ||
+      !text
+    ) {
+      return res
+        .status(200)
+        .send("OK");
+    }
+
+    // =======================================================
+    // 東京時間
+    // =======================================================
+
+    const dateInfo =
+      getTokyoDateInfo();
+
+    // =======================================================
+    // /record
+    // =======================================================
+
+    if (
+      text === "/record" ||
+      text.startsWith(
+        "/record@"
+      )
+    ) {
+      const recordMessage =
+        await processRecord(
+          dateInfo
+        );
+
+      await sendTelegramMessage(
+        chatId,
+        recordMessage
+      );
+
+      return res
+        .status(200)
+        .send("OK");
+    }
+
+    // =======================================================
+    // コマンド判定
+    // =======================================================
+
+    const parts =
+      text.split(/\s+/);
+
+    let command = "";
+
+    if (
+      parts[0] === "/sales" ||
+      parts[0].startsWith(
+        "/sales@"
+      )
+    ) {
+      command = "sales";
+    } else if (
+      parts[0] === "/cancel" ||
+      parts[0].startsWith(
+        "/cancel@"
+      )
+    ) {
+      command = "cancel";
+    } else {
+      return res
+        .status(200)
+        .send("OK");
+    }
+
+    // =======================================================
+    // /cancel
+    //
+    // 今回から
+    //
+    // /cancel
+    //
+    // だけでOK。
+    //
+    // /cancel 20000 10
+    //
+    // は使用しない。
+    // =======================================================
+
+    if (
+      command === "cancel"
+    ) {
+      /*
+       * 間違って
+       *
+       * /cancel 20000 10
+       *
+       * と入力しても、金額を使って取消しない。
+       *
+       * 常に「直近の1件」を取り消す。
+       */
+
+      const result =
+        await processCancel({
+          chatId,
+        });
+
+      if (
+        !result.success
+      ) {
+        await sendTelegramMessage(
+          chatId,
+          result.message
+        );
+
+        return res
+          .status(200)
+          .send("OK");
+      }
+
+      /*
+       * キャンセルした売上の日時を表示
+       */
+
+      const cancelledDate =
+        result.dateKey
+          .replace(
+            /^(\d{4})-(\d{2})-(\d{2})$/,
+            "$1/$2/$3"
+          );
+
+      const cancelMessage =
+        "↩️ 直近の売上を取り消しました\n\n" +
+
+        `💰 売上 ${result.sales.toLocaleString()}円\n` +
+
+        `📦 件数 ${result.orders.toLocaleString()}件\n` +
+
+        `📅 対象日 ${cancelledDate}\n\n` +
+
+        "※元の売上日を基準に日次・月間・年間集計を戻しました。";
+
+      /*
+       * キャンセルした後の現在状態も送る
+       */
+
+      const report =
+        await buildReport(
+          dateInfo
+        );
+
+      await sendTelegramPhoto(
+        chatId,
+        cancelMessage +
+        "\n\n" +
+        report
+      );
+
+      return res
+        .status(200)
+        .send("OK");
+    }
+
+    // =======================================================
+    // /sales
+    // =======================================================
+
+    if (
+      parts.length < 3
+    ) {
+      await sendTelegramMessage(
+        chatId,
+        "使い方：\n" +
+        "/sales 売上 件数\n\n" +
+        "例：\n" +
+        "/sales 5000 12\n\n" +
+        "取り消す場合：\n" +
+        "/cancel"
+      );
+
+      return res
+        .status(200)
+        .send("OK");
+    }
+
+    let sales =
+      Number(
+        parts[1]
+      );
+
+    let orders =
+      Number(
+        parts[2]
+      );
+
+    if (
+      !Number.isFinite(
+        sales
+      ) ||
+      !Number.isFinite(
+        orders
+      ) ||
+      sales < 0 ||
+      orders < 0
+    ) {
+      await sendTelegramMessage(
+        chatId,
+        "売上と件数は0以上の数字で入力してください。"
+      );
+
+      return res
+        .status(200)
+        .send("OK");
+    }
+
+    sales =
+      Math.floor(
+        sales
+      );
+
+    orders =
+      Math.floor(
+        orders
+      );
+
+    // =======================================================
+    // 売上登録
+    // =======================================================
+
+    await processSales({
+      chatId,
+      sales,
+      orders,
+      dateInfo,
+    });
+
+    // =======================================================
+    // レポート
+    // =======================================================
+
+    const report =
+      await buildReport(
+        dateInfo
+      );
+
+    await sendTelegramPhoto(
+      chatId,
+      report
+    );
+
+    return res
+      .status(200)
+      .send("OK");
+
+  } catch (error) {
+    console.error(
+      "Telegram handler error:",
+      error
+    );
+
+    return res
+      .status(500)
+      .send(
+        "Internal Server Error"
+      );
+  }
+};
