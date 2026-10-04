@@ -2,9 +2,8 @@
 
 import crypto from "crypto";
 
-
 /* =========================================================
-   Environment
+   ENV
 ========================================================= */
 
 const KV_REST_API_URL =
@@ -15,11 +14,6 @@ const KV_REST_API_TOKEN =
 
 const SALES_HMAC_SECRET =
   process.env.SALES_HMAC_SECRET;
-
-
-/* =========================================================
-   Constants
-========================================================= */
 
 const TIME_ZONE =
   "Asia/Tokyo";
@@ -32,43 +26,31 @@ const AUDIT_LOG_MAX =
 
 
 /* =========================================================
-   Environment validation
+   ENV CHECK
 ========================================================= */
 
-function requireRedisEnvironment() {
-  const missing = [];
-
-  if (!KV_REST_API_URL) {
-    missing.push(
-      "KV_REST_API_URL"
-    );
-  }
-
-  if (!KV_REST_API_TOKEN) {
-    missing.push(
-      "KV_REST_API_TOKEN"
-    );
-  }
-
-  if (missing.length > 0) {
+function requireRedisEnv() {
+  if (
+    !KV_REST_API_URL ||
+    !KV_REST_API_TOKEN
+  ) {
     throw new Error(
-      `Missing environment variables: ${missing.join(", ")}`
+      "Redis environment variables are missing."
     );
   }
 }
 
-
 function requireHmacSecret() {
   if (!SALES_HMAC_SECRET) {
     throw new Error(
-      "Missing environment variable: SALES_HMAC_SECRET"
+      "SALES_HMAC_SECRET is missing."
     );
   }
 }
 
 
 /* =========================================================
-   Formatting
+   FORMAT
 ========================================================= */
 
 function integer(value) {
@@ -79,11 +61,9 @@ function integer(value) {
   );
 }
 
-
 function yen(value) {
   return `${integer(value)}円`;
 }
-
 
 function percent(value) {
   return `${Number(
@@ -93,10 +73,10 @@ function percent(value) {
 
 
 /* =========================================================
-   Number validation
+   VALIDATION
 ========================================================= */
 
-function safeInteger(
+function positiveInteger(
   value,
   name
 ) {
@@ -106,30 +86,11 @@ function safeInteger(
   if (
     !Number.isSafeInteger(
       number
-    )
+    ) ||
+    number <= 0
   ) {
     throw new Error(
-      `${name} must be a safe integer.`
-    );
-  }
-
-  return number;
-}
-
-
-function positiveInteger(
-  value,
-  name
-) {
-  const number =
-    safeInteger(
-      value,
-      name
-    );
-
-  if (number <= 0) {
-    throw new Error(
-      `${name} must be greater than zero.`
+      `${name} must be a positive integer.`
     );
   }
 
@@ -138,13 +99,13 @@ function positiveInteger(
 
 
 /* =========================================================
-   Redis REST API
+   REDIS REST
 ========================================================= */
 
 async function redisRequest(
   command
 ) {
-  requireRedisEnvironment();
+  requireRedisEnv();
 
   const response =
     await fetch(
@@ -201,7 +162,7 @@ async function redisCommand(
 async function redisPipeline(
   commands
 ) {
-  requireRedisEnvironment();
+  requireRedisEnv();
 
   const response =
     await fetch(
@@ -249,19 +210,15 @@ async function redisEval(
   return redisCommand(
     "EVAL",
     script,
-    String(
-      keys.length
-    ),
+    String(keys.length),
     ...keys,
-    ...args.map(
-      String
-    )
+    ...args.map(String)
   );
 }
 
 
 /* =========================================================
-   Tokyo date
+   TOKYO DATE
 ========================================================= */
 
 function getTokyoDateParts(
@@ -361,7 +318,7 @@ function getTokyoDateParts(
 
 
 /* =========================================================
-   Redis keys
+   REDIS KEYS
 ========================================================= */
 
 function dailyKey(
@@ -372,7 +329,6 @@ function dailyKey(
   );
 }
 
-
 function monthlyKey(
   monthKey
 ) {
@@ -380,7 +336,6 @@ function monthlyKey(
     `moheji:delivery:month:${monthKey}`
   );
 }
-
 
 function yearlyKey(
   yearKey
@@ -390,7 +345,6 @@ function yearlyKey(
   );
 }
 
-
 function workingDaysKey(
   monthKey
 ) {
@@ -399,18 +353,11 @@ function workingDaysKey(
   );
 }
 
-
 function allTimeKey() {
   return (
     "moheji:delivery:alltime"
   );
 }
-
-
-/*
-  既存Redisでは
-  records:<chatId> が ZSET。
-*/
 
 function recordIndexKey(
   chatId
@@ -419,7 +366,6 @@ function recordIndexKey(
     `moheji:delivery:records:${chatId}`
   );
 }
-
 
 function recordKey(
   chatId,
@@ -430,7 +376,6 @@ function recordKey(
   );
 }
 
-
 function operationKey(
   operationId
 ) {
@@ -438,7 +383,6 @@ function operationKey(
     `moheji:delivery:operation:${operationId}`
   );
 }
-
 
 function auditKey(
   chatId
@@ -450,7 +394,7 @@ function auditKey(
 
 
 /* =========================================================
-   Chat ID
+   CHAT ID
 ========================================================= */
 
 function normalizeChatId(
@@ -470,15 +414,6 @@ function normalizeChatId(
   }
 
   return String(number);
-}
-
-
-/* =========================================================
-   Record ID
-========================================================= */
-
-function createRecordId() {
-  return crypto.randomUUID();
 }
 
 
@@ -559,7 +494,7 @@ function signAudit(
 
 
 /* =========================================================
-   Redis type validation
+   REDIS TYPE
 ========================================================= */
 
 async function inspectKeyType(
@@ -592,72 +527,27 @@ async function assertType(
 }
 
 
-async function assertSaleKeyTypes({
-  chatId,
-  dateKey,
-  monthKey,
-  yearKey,
-}) {
-  await Promise.all([
-    assertType(
-      dailyKey(
-        dateKey
-      ),
-      "hash"
-    ),
+/* =========================================================
+   RECORD
+========================================================= */
 
-    assertType(
-      monthlyKey(
-        monthKey
-      ),
-      "hash"
-    ),
-
-    assertType(
-      yearlyKey(
-        yearKey
-      ),
-      "hash"
-    ),
-
-    assertType(
-      allTimeKey(),
-      "hash"
-    ),
-
-    assertType(
-      workingDaysKey(
-        monthKey
-      ),
-      "set"
-    ),
-
-    assertType(
-      recordIndexKey(
-        chatId
-      ),
-      "zset"
-    ),
-  ]);
+function createRecordId() {
+  return crypto.randomUUID();
 }
 
 
-/* =========================================================
-   Record creation
-========================================================= */
-
-function buildRecord({
+function createRecord({
   chatId,
   sales,
   orders,
   operationId,
-  createdAt,
 }) {
+  const now =
+    new Date();
+
   const date =
     getTokyoDateParts(
-      new Date(
-        createdAt
-      )
+      now
     );
 
   const record = {
@@ -684,7 +574,8 @@ function buildRecord({
     orders:
       String(orders),
 
-    createdAt,
+    createdAt:
+      now.toISOString(),
 
     status:
       "active",
@@ -697,6 +588,8 @@ function buildRecord({
 
   return record;
 }
+
+
 /* =========================================================
    SALE LUA
 ========================================================= */
@@ -723,7 +616,7 @@ local orders = tonumber(ARGV[8])
 local createdAt = ARGV[9]
 local signature = ARGV[10]
 local auditJson = ARGV[11]
-local timestamp = tonumber(ARGV[12])
+local score = tonumber(ARGV[12])
 
 local existing =
   redis.call(
@@ -768,7 +661,7 @@ redis.call(
 redis.call(
   "ZADD",
   recordIndexKey,
-  timestamp,
+  score,
   recordId
 )
 
@@ -861,7 +754,7 @@ return {
 
 
 /* =========================================================
-   Register sale
+   REGISTER SALE
 ========================================================= */
 
 async function registerSale({
@@ -888,39 +781,20 @@ async function registerSale({
     );
 
   if (
-    typeof operationId !== "string" ||
-    operationId.length < 1 ||
-    operationId.length > 200
+    typeof operationId !==
+      "string" ||
+    operationId.length === 0
   ) {
     throw new Error(
       "Invalid operationId."
     );
   }
 
-  const now =
-    new Date();
-
   const date =
-    getTokyoDateParts(
-      now
-    );
-
-  await assertSaleKeyTypes({
-    chatId:
-      normalizedChatId,
-
-    dateKey:
-      date.dateKey,
-
-    monthKey:
-      date.monthKey,
-
-    yearKey:
-      date.yearKey,
-  });
+    getTokyoDateParts();
 
   const record =
-    buildRecord({
+    createRecord({
       chatId:
         normalizedChatId,
 
@@ -931,10 +805,91 @@ async function registerSale({
         normalizedOrders,
 
       operationId,
-
-      createdAt:
-        now.toISOString(),
     });
+
+  const keys = [
+    operationKey(
+      operationId
+    ),
+
+    recordKey(
+      normalizedChatId,
+      record.recordId
+    ),
+
+    recordIndexKey(
+      normalizedChatId
+    ),
+
+    dailyKey(
+      date.dateKey
+    ),
+
+    monthlyKey(
+      date.monthKey
+    ),
+
+    yearlyKey(
+      date.yearKey
+    ),
+
+    allTimeKey(),
+
+    workingDaysKey(
+      date.monthKey
+    ),
+
+    auditKey(
+      normalizedChatId
+    ),
+  ];
+
+  await Promise.all([
+    assertType(
+      keys[0],
+      "string"
+    ),
+
+    assertType(
+      keys[1],
+      "hash"
+    ),
+
+    assertType(
+      keys[2],
+      "zset"
+    ),
+
+    assertType(
+      keys[3],
+      "hash"
+    ),
+
+    assertType(
+      keys[4],
+      "hash"
+    ),
+
+    assertType(
+      keys[5],
+      "hash"
+    ),
+
+    assertType(
+      keys[6],
+      "hash"
+    ),
+
+    assertType(
+      keys[7],
+      "set"
+    ),
+
+    assertType(
+      keys[8],
+      "list"
+    ),
+  ]);
 
   const audit = {
     operationId,
@@ -974,44 +929,7 @@ async function registerSale({
   const result =
     await redisEval(
       SALE_SCRIPT,
-
-      [
-        operationKey(
-          operationId
-        ),
-
-        recordKey(
-          normalizedChatId,
-          record.recordId
-        ),
-
-        recordIndexKey(
-          normalizedChatId
-        ),
-
-        dailyKey(
-          date.dateKey
-        ),
-
-        monthlyKey(
-          date.monthKey
-        ),
-
-        yearlyKey(
-          date.yearKey
-        ),
-
-        allTimeKey(),
-
-        workingDaysKey(
-          date.monthKey
-        ),
-
-        auditKey(
-          normalizedChatId
-        ),
-      ],
-
+      keys,
       [
         operationId,
 
@@ -1019,11 +937,11 @@ async function registerSale({
 
         normalizedChatId,
 
-        date.dateKey,
+        record.dateKey,
 
-        date.monthKey,
+        record.monthKey,
 
-        date.yearKey,
+        record.yearKey,
 
         normalizedSales,
 
@@ -1042,28 +960,14 @@ async function registerSale({
     );
 
   if (
-    !Array.isArray(result)
-  ) {
-    throw new Error(
-      "Invalid Redis sale result."
-    );
-  }
-
-  if (
-    result[0] ===
+    result?.[0] ===
     "DUPLICATE"
   ) {
-    const duplicateRecord =
+    const oldRecord =
       await getRecord(
         normalizedChatId,
         result[1]
       );
-
-    if (!duplicateRecord) {
-      throw new Error(
-        "Duplicate operation record not found."
-      );
-    }
 
     return {
       duplicate:
@@ -1072,16 +976,16 @@ async function registerSale({
       operationId,
 
       record:
-        duplicateRecord,
+        oldRecord,
     };
   }
 
   if (
-    result[0] !==
+    result?.[0] !==
     "OK"
   ) {
     throw new Error(
-      `Sale operation failed: ${JSON.stringify(result)}`
+      `Sale failed: ${JSON.stringify(result)}`
     );
   }
 
@@ -1097,7 +1001,7 @@ async function registerSale({
 
 
 /* =========================================================
-   Hash
+   HASH
 ========================================================= */
 
 async function getHash(
@@ -1110,7 +1014,7 @@ async function getHash(
     );
 
   if (
-    !values ||
+    !Array.isArray(values) ||
     values.length === 0
   ) {
     return null;
@@ -1134,21 +1038,18 @@ async function getHash(
 
 
 /* =========================================================
-   Get record
+   RECORD GET
 ========================================================= */
 
 async function getRecord(
   chatId,
   recordId
 ) {
-  const normalizedChatId =
-    normalizeChatId(
-      chatId
-    );
-
   return getHash(
     recordKey(
-      normalizedChatId,
+      normalizeChatId(
+        chatId
+      ),
       recordId
     )
   );
@@ -1156,7 +1057,7 @@ async function getRecord(
 
 
 /* =========================================================
-   Latest active record
+   LATEST ACTIVE RECORD
 ========================================================= */
 
 async function getLatestActiveRecord(
@@ -1167,14 +1068,19 @@ async function getLatestActiveRecord(
       chatId
     );
 
+  await assertType(
+    recordIndexKey(
+      normalizedChatId
+    ),
+    "zset"
+  );
+
   const ids =
     await redisCommand(
       "ZREVRANGE",
-
       recordIndexKey(
         normalizedChatId
       ),
-
       "0",
       "100"
     );
@@ -1208,15 +1114,14 @@ async function getLatestActiveRecord(
 
 
 /* =========================================================
-   Signature verification
+   SIGNATURE VERIFY
 ========================================================= */
 
 function verifyRecordSignature(
   record
 ) {
   if (
-    !record ||
-    !record.signature
+    !record?.signature
   ) {
     return false;
   }
@@ -1227,28 +1132,28 @@ function verifyRecordSignature(
         record
       );
 
-    const actualBuffer =
+    const a =
       Buffer.from(
         record.signature,
         "utf8"
       );
 
-    const expectedBuffer =
+    const b =
       Buffer.from(
         expected,
         "utf8"
       );
 
     if (
-      actualBuffer.length !==
-      expectedBuffer.length
+      a.length !==
+      b.length
     ) {
       return false;
     }
 
     return crypto.timingSafeEqual(
-      actualBuffer,
-      expectedBuffer
+      a,
+      b
     );
   } catch {
     return false;
@@ -1299,8 +1204,7 @@ local status =
 
 if status ~= "active" then
   return {
-    "NOT_ACTIVE",
-    status or ""
+    "NOT_ACTIVE"
   }
 end
 
@@ -1324,15 +1228,13 @@ local dailyOrders =
 
 if dailySales < sales then
   return {
-    "UNDERFLOW",
-    "daily_sales"
+    "UNDERFLOW"
   }
 end
 
 if dailyOrders < orders then
   return {
-    "UNDERFLOW",
-    "daily_orders"
+    "UNDERFLOW"
   }
 end
 
@@ -1410,11 +1312,11 @@ local remainingOrders =
     ) or "0"
   )
 
-if (
+if
   remainingSales <= 0
   and
   remainingOrders <= 0
-) then
+then
   redis.call(
     "SREM",
     workingDaysKey,
@@ -1451,14 +1353,13 @@ redis.call(
 )
 
 return {
-  "OK",
-  "cancelled"
+  "OK"
 }
 `;
 
 
 /* =========================================================
-   Cancel latest sale
+   CANCEL
 ========================================================= */
 
 async function cancelLatestSale({
@@ -1469,16 +1370,6 @@ async function cancelLatestSale({
     normalizeChatId(
       chatId
     );
-
-  if (
-    typeof operationId !== "string" ||
-    operationId.length < 1 ||
-    operationId.length > 200
-  ) {
-    throw new Error(
-      "Invalid operationId."
-    );
-  }
 
   const record =
     await getLatestActiveRecord(
@@ -1513,46 +1404,78 @@ async function cancelLatestSale({
       "orders"
     );
 
+  const keys = [
+    operationKey(
+      operationId
+    ),
+
+    recordKey(
+      normalizedChatId,
+      record.recordId
+    ),
+
+    dailyKey(
+      record.dateKey
+    ),
+
+    monthlyKey(
+      record.monthKey
+    ),
+
+    yearlyKey(
+      record.yearKey
+    ),
+
+    allTimeKey(),
+
+    workingDaysKey(
+      record.monthKey
+    ),
+
+    auditKey(
+      normalizedChatId
+    ),
+  ];
+
   await Promise.all([
     assertType(
-      dailyKey(
-        record.dateKey
-      ),
+      keys[0],
+      "string"
+    ),
+
+    assertType(
+      keys[1],
       "hash"
     ),
 
     assertType(
-      monthlyKey(
-        record.monthKey
-      ),
+      keys[2],
       "hash"
     ),
 
     assertType(
-      yearlyKey(
-        record.yearKey
-      ),
+      keys[3],
       "hash"
     ),
 
     assertType(
-      allTimeKey(),
+      keys[4],
       "hash"
     ),
 
     assertType(
-      workingDaysKey(
-        record.monthKey
-      ),
+      keys[5],
+      "hash"
+    ),
+
+    assertType(
+      keys[6],
       "set"
     ),
 
     assertType(
-      recordKey(
-        normalizedChatId,
-        record.recordId
-      ),
-      "hash"
+      keys[7],
+      "list"
     ),
   ]);
 
@@ -1592,40 +1515,7 @@ async function cancelLatestSale({
   const result =
     await redisEval(
       CANCEL_SCRIPT,
-
-      [
-        operationKey(
-          operationId
-        ),
-
-        recordKey(
-          normalizedChatId,
-          record.recordId
-        ),
-
-        dailyKey(
-          record.dateKey
-        ),
-
-        monthlyKey(
-          record.monthKey
-        ),
-
-        yearlyKey(
-          record.yearKey
-        ),
-
-        allTimeKey(),
-
-        workingDaysKey(
-          record.monthKey
-        ),
-
-        auditKey(
-          normalizedChatId
-        ),
-      ],
-
+      keys,
       [
         operationId,
 
@@ -1642,29 +1532,19 @@ async function cancelLatestSale({
     );
 
   if (
-    !Array.isArray(result)
-  ) {
-    throw new Error(
-      "Invalid Redis cancel result."
-    );
-  }
-
-  if (
-    result[0] ===
+    result?.[0] ===
     "DUPLICATE"
   ) {
     return {
       duplicate:
         true,
 
-      operationId,
-
       record,
     };
   }
 
   if (
-    result[0] ===
+    result?.[0] ===
     "NOT_ACTIVE"
   ) {
     throw new Error(
@@ -1673,7 +1553,7 @@ async function cancelLatestSale({
   }
 
   if (
-    result[0] ===
+    result?.[0] ===
     "UNDERFLOW"
   ) {
     throw new Error(
@@ -1682,11 +1562,11 @@ async function cancelLatestSale({
   }
 
   if (
-    result[0] !==
+    result?.[0] !==
     "OK"
   ) {
     throw new Error(
-      `Cancel operation failed: ${JSON.stringify(result)}`
+      `Cancel failed: ${JSON.stringify(result)}`
     );
   }
 
@@ -1694,13 +1574,13 @@ async function cancelLatestSale({
     duplicate:
       false,
 
-    operationId,
-
     record,
   };
 }
+
+
 /* =========================================================
-   Aggregates
+   AGGREGATES
 ========================================================= */
 
 async function getAggregate(
@@ -1766,7 +1646,7 @@ async function getAllTime() {
 
 
 /* =========================================================
-   Working days
+   WORKING DAYS
 ========================================================= */
 
 async function getWorkingDays(
@@ -1777,24 +1657,10 @@ async function getWorkingDays(
       monthKey
     );
 
-  const type =
-    await inspectKeyType(
-      key
-    );
-
-  if (
-    type === "none"
-  ) {
-    return 0;
-  }
-
-  if (
-    type !== "set"
-  ) {
-    throw new Error(
-      `REDIS_TYPE_MISMATCH: ${key} expected=set actual=${type}`
-    );
-  }
+  await assertType(
+    key,
+    "set"
+  );
 
   return Number(
     await redisCommand(
@@ -1806,7 +1672,7 @@ async function getWorkingDays(
 
 
 /* =========================================================
-   Monthly best
+   MONTHLY BEST
 ========================================================= */
 
 async function getMonthlyBest(
@@ -1818,18 +1684,17 @@ async function getMonthlyBest(
       `moheji:delivery:daily:${monthKey}-*`
     );
 
+  let bestSales = 0;
+  let bestOrders = 0;
+
   if (
-    !Array.isArray(keys) ||
-    keys.length === 0
+    !Array.isArray(keys)
   ) {
     return {
       sales: 0,
       orders: 0,
     };
   }
-
-  let bestSales = 0;
-  let bestOrders = 0;
 
   for (
     const key of keys
@@ -1849,21 +1714,17 @@ async function getMonthlyBest(
         data?.orders || 0
       );
 
-    if (
-      sales >
-      bestSales
-    ) {
-      bestSales =
-        sales;
-    }
+    bestSales =
+      Math.max(
+        bestSales,
+        sales
+      );
 
-    if (
-      orders >
-      bestOrders
-    ) {
-      bestOrders =
-        orders;
-    }
+    bestOrders =
+      Math.max(
+        bestOrders,
+        orders
+      );
   }
 
   return {
@@ -1877,7 +1738,7 @@ async function getMonthlyBest(
 
 
 /* =========================================================
-   Report
+   REPORT
 ========================================================= */
 
 async function buildReport() {
@@ -1917,57 +1778,34 @@ async function buildReport() {
     ]);
 
   const todaySales =
-    Number(
-      daily.sales || 0
-    );
+    daily.sales;
 
   const todayOrders =
-    Number(
-      daily.orders || 0
-    );
+    daily.orders;
 
   const monthlySales =
-    Number(
-      monthly.sales || 0
-    );
+    monthly.sales;
 
   const monthlyOrders =
-    Number(
-      monthly.orders || 0
-    );
+    monthly.orders;
 
   const yearlySales =
-    Number(
-      yearly.sales || 0
-    );
+    yearly.sales;
 
   const yearlyOrders =
-    Number(
-      yearly.orders || 0
-    );
+    yearly.orders;
 
   const totalOrders =
-    Number(
-      allTime.orders || 0
-    );
+    allTime.orders;
 
   const workDays =
-    Number(
-      workingDays || 0
-    );
+    workingDays;
 
   const bestSales =
-    Number(
-      monthlyBest.sales || 0
-    );
+    monthlyBest.sales;
 
   const bestOrders =
-    Number(
-      monthlyBest.orders || 0
-    );
-
-
-  /* 1件あたり */
+    monthlyBest.orders;
 
   const averageOrderValue =
     todayOrders > 0
@@ -1977,9 +1815,6 @@ async function buildReport() {
         )
       : 0;
 
-
-  /* 平均売上／日 */
-
   const averageDailySales =
     workDays > 0
       ? Math.floor(
@@ -1988,19 +1823,14 @@ async function buildReport() {
         )
       : 0;
 
-
-  /* 目標達成率 */
-
   const achievementRate =
     MONTHLY_TARGET > 0
       ? (
           monthlySales /
           MONTHLY_TARGET
-        ) * 100
+        ) *
+        100
       : 0;
-
-
-  /* 10段階進捗 */
 
   const progressCount =
     Math.min(
@@ -2023,21 +1853,12 @@ async function buildReport() {
       progressCount
     );
 
-
-  /* 東京時間 */
-
   const timestamp =
     `${now.year}/` +
     `${String(now.month).padStart(2, "0")}/` +
     `${String(now.day).padStart(2, "0")} ` +
     `${String(now.hour).padStart(2, "0")}:` +
     `${String(now.minute).padStart(2, "0")}`;
-
-
-  /*
-    ここは画像の表示内容に合わせる。
-    空行なし。
-  */
 
   return [
     "🏍️ 配達売上",
@@ -2063,7 +1884,7 @@ async function buildReport() {
 
 
 /* =========================================================
-   Record report
+   RECORD REPORT
 ========================================================= */
 
 async function buildRecordReport() {
@@ -2133,51 +1954,33 @@ async function buildRecordReport() {
 
 
 /* =========================================================
-   Audit logs
+   AUDIT
 ========================================================= */
 
 async function getAuditLogs(
   chatId,
   limit = 100
 ) {
-  const normalizedChatId =
-    normalizeChatId(
-      chatId
-    );
-
-  const safeLimit =
-    Math.min(
-      500,
-      Math.max(
-        1,
-        Number(limit) ||
-          100
+  const key =
+    auditKey(
+      normalizeChatId(
+        chatId
       )
     );
 
-  const key =
-    auditKey(
-      normalizedChatId
-    );
+  await assertType(
+    key,
+    "list"
+  );
 
-  const type =
-    await inspectKeyType(
-      key
+  const safeLimit =
+    Math.min(
+      AUDIT_LOG_MAX,
+      Math.max(
+        1,
+        Number(limit) || 100
+      )
     );
-
-  if (
-    type === "none"
-  ) {
-    return [];
-  }
-
-  if (
-    type !== "list"
-  ) {
-    throw new Error(
-      `REDIS_TYPE_MISMATCH: ${key} expected=list actual=${type}`
-    );
-  }
 
   return redisCommand(
     "LRANGE",
@@ -2191,19 +1994,19 @@ async function getAuditLogs(
 
 
 /* =========================================================
-   Diagnostics
+   DIAGNOSTIC
 ========================================================= */
 
 async function diagnoseSaleRedis(
   chatId
 ) {
-  const normalizedChatId =
+  const now =
+    getTokyoDateParts();
+
+  const id =
     normalizeChatId(
       chatId
     );
-
-  const now =
-    getTokyoDateParts();
 
   const keys = [
     dailyKey(
@@ -2225,11 +2028,11 @@ async function diagnoseSaleRedis(
     ),
 
     recordIndexKey(
-      normalizedChatId
+      id
     ),
 
     auditKey(
-      normalizedChatId
+      id
     ),
   ];
 
@@ -2249,7 +2052,7 @@ async function diagnoseSaleRedis(
 
 
 /* =========================================================
-   Exports
+   EXPORTS
 ========================================================= */
 
 export {
