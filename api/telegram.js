@@ -7,7 +7,6 @@ import {
   cancelLatestSale,
   buildReport,
   buildRecordReport,
-  runLegacyMigration,
   yen,
   integer,
 } from "./sales.js";
@@ -25,7 +24,7 @@ const TELEGRAM_WEBHOOK_SECRET =
 
 
 /* =========================================================
-   Photo
+   Image
 ========================================================= */
 
 const PHOTO_URL =
@@ -53,19 +52,25 @@ const MAX_UPDATE_BYTES =
 function requireEnvironment() {
   const missing = [];
 
-  if (!TELEGRAM_BOT_TOKEN) {
+  if (
+    !TELEGRAM_BOT_TOKEN
+  ) {
     missing.push(
       "TELEGRAM_BOT_TOKEN"
     );
   }
 
-  if (!TELEGRAM_WEBHOOK_SECRET) {
+  if (
+    !TELEGRAM_WEBHOOK_SECRET
+  ) {
     missing.push(
       "TELEGRAM_WEBHOOK_SECRET"
     );
   }
 
-  if (missing.length) {
+  if (
+    missing.length
+  ) {
     throw new Error(
       `Missing environment variables: ${missing.join(", ")}`
     );
@@ -74,7 +79,7 @@ function requireEnvironment() {
 
 
 /* =========================================================
-   Constant-time comparison
+   Secure compare
 ========================================================= */
 
 function secureEqual(
@@ -117,7 +122,7 @@ function secureEqual(
 
 
 /* =========================================================
-   Telegram webhook verification
+   Webhook secret
 ========================================================= */
 
 function verifyWebhookSecret(
@@ -130,16 +135,10 @@ function verifyWebhookSecret(
       "x-telegram-bot-api-secret-token"
     ];
 
-  if (
-    !secureEqual(
-      received,
-      TELEGRAM_WEBHOOK_SECRET
-    )
-  ) {
-    return false;
-  }
-
-  return true;
+  return secureEqual(
+    received,
+    TELEGRAM_WEBHOOK_SECRET
+  );
 }
 
 
@@ -160,7 +159,8 @@ async function telegramRequest(
     await fetch(
       url,
       {
-        method: "POST",
+        method:
+          "POST",
 
         headers: {
           "Content-Type":
@@ -191,7 +191,7 @@ async function telegramRequest(
 
 
 /* =========================================================
-   Send message
+   Send plain text
 ========================================================= */
 
 async function sendMessage(
@@ -218,6 +218,13 @@ async function sendMessage(
             i,
             i + TEXT_LIMIT
           ),
+
+        /*
+          parse_mode を設定しない。
+
+          Markdown/HTMLに変換せず、
+          Unicode絵文字をそのまま送る。
+        */
       }
     );
   }
@@ -225,13 +232,17 @@ async function sendMessage(
 
 
 /* =========================================================
-   Send photo
+   Send photo + text
 ========================================================= */
 
 async function sendPhoto(
   chatId,
   caption
 ) {
+  /*
+    Photo only
+  */
+
   if (!caption) {
     return telegramRequest(
       "sendPhoto",
@@ -245,13 +256,10 @@ async function sendPhoto(
     );
   }
 
-  /*
-    Telegram photo caption has a much smaller limit
-    than normal message text.
 
-    Therefore long reports are sent as:
-      1. image
-      2. normal message
+  /*
+    Short caption:
+    image + text
   */
 
   if (
@@ -268,9 +276,20 @@ async function sendPhoto(
           PHOTO_URL,
 
         caption,
+
+        /*
+          parse_modeなし。
+        */
       }
     );
   }
+
+
+  /*
+    Long text:
+    image first,
+    report as normal message.
+  */
 
   await telegramRequest(
     "sendPhoto",
@@ -324,8 +343,7 @@ function validateUpdate(
     update.message;
 
   /*
-    Telegram can send many kinds of updates.
-    This bot only processes normal messages.
+    非message updateは無視。
   */
 
   if (
@@ -361,7 +379,7 @@ function validateUpdate(
 
   if (
     typeof message.text !==
-    "undefined" &&
+      "undefined" &&
     typeof message.text !==
       "string"
   ) {
@@ -385,7 +403,7 @@ function validateUpdate(
 
 
 /* =========================================================
-   Command parser
+   Command
 ========================================================= */
 
 function commandName(
@@ -403,7 +421,7 @@ function commandName(
 
 
 /* =========================================================
-   Sales parser
+   /sales parser
 ========================================================= */
 
 function parseSales(
@@ -416,13 +434,6 @@ function parseSales(
         ""
       )
       .trim();
-
-  /*
-    Integer only.
-    Examples:
-      /sales 10000 5
-      /sales 17014 17
-  */
 
   const values =
     body.match(
@@ -587,14 +598,6 @@ function bodySize(
    Deterministic operation ID
 ========================================================= */
 
-/*
-  Telegram retries the same update when the webhook response
-  is not accepted.
-
-  Using update_id as part of the operation ID prevents the same
-  Telegram update from becoming multiple sales operations.
-*/
-
 function createUpdateOperationId(
   updateId
 ) {
@@ -606,13 +609,12 @@ function createUpdateOperationId(
       `telegram-update:${updateId}`,
       "utf8"
     )
-    .digest("hex");
+    .digest(
+      "hex"
+    );
 }
 
 
-/*
-  Cancel gets a different namespace from sales.
-*/
 function createCancelOperationId(
   updateId
 ) {
@@ -624,12 +626,14 @@ function createCancelOperationId(
       `telegram-cancel:${updateId}`,
       "utf8"
     )
-    .digest("hex");
+    .digest(
+      "hex"
+    );
 }
 
 
 /* =========================================================
-   Main handler
+   Handler
 ========================================================= */
 
 export default async function handler(
@@ -639,6 +643,7 @@ export default async function handler(
   /*
     Health check
   */
+
   if (
     req.method ===
     "GET"
@@ -646,7 +651,9 @@ export default async function handler(
     return res.status(
       200
     ).json({
-      ok: true,
+      ok:
+        true,
+
       service:
         "moheji-telegram-webhook",
     });
@@ -654,8 +661,9 @@ export default async function handler(
 
 
   /*
-    Only POST is accepted.
+    POST only
   */
+
   if (
     req.method !==
     "POST"
@@ -663,7 +671,9 @@ export default async function handler(
     return res.status(
       405
     ).json({
-      ok: false,
+      ok:
+        false,
+
       error:
         "Method Not Allowed",
     });
@@ -671,9 +681,9 @@ export default async function handler(
 
 
   try {
-    /* -------------------------------------------------------
-       Webhook secret
-    ------------------------------------------------------- */
+    /*
+      Webhook secret
+    */
 
     if (
       !verifyWebhookSecret(
@@ -683,16 +693,18 @@ export default async function handler(
       return res.status(
         401
       ).json({
-        ok: false,
+        ok:
+          false,
+
         error:
           "Unauthorized",
       });
     }
 
 
-    /* -------------------------------------------------------
-       Body
-    ------------------------------------------------------- */
+    /*
+      Telegram body
+    */
 
     const update =
       req.body;
@@ -705,16 +717,18 @@ export default async function handler(
       return res.status(
         413
       ).json({
-        ok: false,
+        ok:
+          false,
+
         error:
           "Payload too large",
       });
     }
 
 
-    /* -------------------------------------------------------
-       Validate Telegram update
-    ------------------------------------------------------- */
+    /*
+      Validate
+    */
 
     const message =
       validateUpdate(
@@ -722,26 +736,22 @@ export default async function handler(
       );
 
 
-    /*
-      Ignore non-message updates.
-    */
-
     if (!message) {
       return res.status(
         200
       ).json({
-        ok: true,
-        ignored: true,
+        ok:
+          true,
+
+        ignored:
+          true,
       });
     }
 
 
-    /* -------------------------------------------------------
-       Basic message data
-    ------------------------------------------------------- */
-
     const chatId =
       message.chat.id;
+
 
     const text =
       String(
@@ -749,16 +759,15 @@ export default async function handler(
       ).trim();
 
 
-    /*
-      Empty messages are ignored.
-    */
-
     if (!text) {
       return res.status(
         200
       ).json({
-        ok: true,
-        ignored: true,
+        ok:
+          true,
+
+        ignored:
+          true,
       });
     }
 
@@ -769,10 +778,9 @@ export default async function handler(
       );
 
 
-    /* =======================================================
-       /start
-       /help
-    ======================================================= */
+    /* =====================================================
+       /start /help
+    ===================================================== */
 
     if (
       command === "start" ||
@@ -786,15 +794,17 @@ export default async function handler(
       return res.status(
         200
       ).json({
-        ok: true,
+        ok:
+          true,
+
         command,
       });
     }
 
 
-    /* =======================================================
+    /* =====================================================
        /sales
-    ======================================================= */
+    ===================================================== */
 
     if (
       command === "sales"
@@ -808,18 +818,10 @@ export default async function handler(
             text
           );
 
-
-        /*
-          IMPORTANT:
-          Same Telegram update -> same operationId.
-          This prevents duplicate sales on webhook retry.
-        */
-
         const operationId =
           createUpdateOperationId(
             update.update_id
           );
-
 
         const result =
           await registerSale({
@@ -829,7 +831,6 @@ export default async function handler(
             operationId,
           });
 
-
         await sendPhoto(
           chatId,
           formatSaleResult(
@@ -837,26 +838,30 @@ export default async function handler(
           )
         );
 
-
         return res.status(
           200
         ).json({
-          ok: true,
+          ok:
+            true,
+
           command:
             "sales",
+
           operationId:
             result.operationId,
+
           duplicate:
             Boolean(
               result.duplicate
             ),
         });
-      } catch (error) {
+      } catch (
+        error
+      ) {
         console.error(
           "Sales error:",
           error
         );
-
 
         try {
           await sendMessage(
@@ -872,29 +877,23 @@ export default async function handler(
           );
         }
 
-
-        /*
-          Return 200 so Telegram does not endlessly retry
-          a command which has already been processed at the
-          application level.
-        */
-
         return res.status(
           200
         ).json({
-          ok: false,
+          ok:
+            false,
+
           command:
             "sales",
+
           error:
             error.message,
         });
       }
     }
-
-
-    /* =======================================================
+        /* =====================================================
        /cancel
-    ======================================================= */
+    ===================================================== */
 
     if (
       command === "cancel"
@@ -905,13 +904,11 @@ export default async function handler(
             update.update_id
           );
 
-
         const result =
           await cancelLatestSale({
             chatId,
             operationId,
           });
-
 
         await sendPhoto(
           chatId,
@@ -920,26 +917,30 @@ export default async function handler(
           )
         );
 
-
         return res.status(
           200
         ).json({
-          ok: true,
+          ok:
+            true,
+
           command:
             "cancel",
+
           operationId:
             result.operationId,
+
           duplicate:
             Boolean(
               result.duplicate
             ),
         });
-      } catch (error) {
+      } catch (
+        error
+      ) {
         console.error(
           "Cancel error:",
           error
         );
-
 
         try {
           await sendMessage(
@@ -955,13 +956,15 @@ export default async function handler(
           );
         }
 
-
         return res.status(
           200
         ).json({
-          ok: false,
+          ok:
+            false,
+
           command:
             "cancel",
+
           error:
             error.message,
         });
@@ -969,9 +972,9 @@ export default async function handler(
     }
 
 
-    /* =======================================================
+    /* =====================================================
        /report
-    ======================================================= */
+    ===================================================== */
 
     if (
       command === "report"
@@ -980,26 +983,27 @@ export default async function handler(
         const report =
           await buildReport();
 
-
         await sendPhoto(
           chatId,
           report
         );
 
-
         return res.status(
           200
         ).json({
-          ok: true,
+          ok:
+            true,
+
           command:
             "report",
         });
-      } catch (error) {
+      } catch (
+        error
+      ) {
         console.error(
           "Report error:",
           error
         );
-
 
         try {
           await sendMessage(
@@ -1015,13 +1019,15 @@ export default async function handler(
           );
         }
 
-
         return res.status(
           200
         ).json({
-          ok: false,
+          ok:
+            false,
+
           command:
             "report",
+
           error:
             error.message,
         });
@@ -1029,9 +1035,9 @@ export default async function handler(
     }
 
 
-    /* =======================================================
+    /* =====================================================
        /record
-    ======================================================= */
+    ===================================================== */
 
     if (
       command === "record"
@@ -1040,31 +1046,27 @@ export default async function handler(
         const report =
           await buildRecordReport();
 
-
-        /*
-          sendPhoto() automatically switches to a normal
-          Telegram message if the caption is too long.
-        */
-
         await sendPhoto(
           chatId,
           report
         );
 
-
         return res.status(
           200
         ).json({
-          ok: true,
+          ok:
+            true,
+
           command:
             "record",
         });
-      } catch (error) {
+      } catch (
+        error
+      ) {
         console.error(
           "Record error:",
           error
         );
-
 
         try {
           await sendMessage(
@@ -1080,13 +1082,15 @@ export default async function handler(
           );
         }
 
-
         return res.status(
           200
         ).json({
-          ok: false,
+          ok:
+            false,
+
           command:
             "record",
+
           error:
             error.message,
         });
@@ -1094,9 +1098,9 @@ export default async function handler(
     }
 
 
-    /* =======================================================
+    /* =====================================================
        Unknown command
-    ======================================================= */
+    ===================================================== */
 
     if (
       text.startsWith(
@@ -1105,6 +1109,7 @@ export default async function handler(
     ) {
       await sendMessage(
         chatId,
+
         [
           "❓ コマンドが分かりません。",
           "",
@@ -1112,41 +1117,38 @@ export default async function handler(
         ].join("\n")
       );
 
-
       return res.status(
         200
       ).json({
-        ok: true,
+        ok:
+          true,
+
         command:
           "unknown",
       });
     }
 
 
-    /* =======================================================
+    /* =====================================================
        Normal text
-    ======================================================= */
+    ===================================================== */
 
     return res.status(
       200
     ).json({
-      ok: true,
-      ignored: true,
-    });
-  } catch (error) {
-    /* =======================================================
-       Global error
-    ======================================================= */
+      ok:
+        true,
 
+      ignored:
+        true,
+    });
+  } catch (
+    error
+  ) {
     console.error(
       "Webhook error:",
       error
     );
-
-
-    /*
-      Never expose internal details to Telegram unnecessarily.
-    */
 
     try {
       const chatId =
@@ -1154,7 +1156,6 @@ export default async function handler(
           ?.message
           ?.chat
           ?.id;
-
 
       if (
         Number.isSafeInteger(
@@ -1175,16 +1176,12 @@ export default async function handler(
       );
     }
 
-
-    /*
-      Return 200 to Telegram to prevent repeated delivery
-      storms from a malformed/unexpected update.
-    */
-
     return res.status(
       200
     ).json({
-      ok: false,
+      ok:
+        false,
+
       error:
         "Internal processing error",
     });
