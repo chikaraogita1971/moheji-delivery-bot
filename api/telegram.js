@@ -5,7 +5,8 @@ const KV_REST_API_URL = process.env.KV_REST_API_URL;
 const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN;
 
 // GitHub等の画像URLではなく、Telegramから直接参照できる画像URLを使用
-const PHOTO_URL = process.env.PHOTO_URL || "";
+const PHOTO_URL =
+  "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/main/D261A432-2C27-4ADD-900E-E6BE35B57595.png";
 
 // ============================================================
 // Redis REST API
