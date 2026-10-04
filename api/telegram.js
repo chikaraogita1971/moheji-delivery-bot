@@ -1,23 +1,19 @@
 // api/telegram.js
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const KV_REST_API_URL = process.env.KV_REST_API_URL;
 const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+
+const TARGET_MONTHLY = 500000;
 
 const SALES_IMAGE_URL =
   "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/refs/heads/main/D261A432-2C27-4ADD-900E-E6BE35B57595.png";
 
-const MONTHLY_TARGET = 500000;
-
-// ============================================================
-// Redis REST
-// ============================================================
+/* =========================================================
+   Redis REST
+========================================================= */
 
 async function redis(...args) {
-  if (!KV_REST_API_URL || !KV_REST_API_TOKEN) {
-    throw new Error("Redis environment variables are missing.");
-  }
-
   const response = await fetch(KV_REST_API_URL, {
     method: "POST",
     headers: {
@@ -29,200 +25,218 @@ async function redis(...args) {
 
   const text = await response.text();
 
+  if (!response.ok) {
+    throw new Error(
+      `Redis error ${response.status}: ${text}`
+    );
+  }
+
   let data;
 
   try {
     data = JSON.parse(text);
   } catch {
+    throw new Error(`Redis invalid JSON: ${text}`);
+  }
+
+  if (data && data.error) {
     throw new Error(
-      `Redis JSON parse error: ${text.slice(0, 500)}`
+      `Redis command error: ${JSON.stringify(data)}`
     );
   }
 
-  if (!response.ok) {
-    throw new Error(
-      `Redis HTTP ${response.status}: ${
-        data?.error || text.slice(0, 500)
-      }`
-    );
-  }
-
-  if (data?.error) {
-    throw new Error(`Redis error: ${data.error}`);
-  }
-
-  return data?.result;
+  return data.result;
 }
 
-// ============================================================
-// Redis multi-exec
-// ============================================================
+
+/* =========================================================
+   Redis Multi / Transaction
+========================================================= */
 
 async function redisMulti(commands) {
-  if (!Array.isArray(commands) || commands.length === 0) {
-    return [];
-  }
-
-  const response = await fetch(`${KV_REST_API_URL}/multi-exec`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${KV_REST_API_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(commands),
-  });
+  const response = await fetch(
+    `${KV_REST_API_URL}/multi-exec`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${KV_REST_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(commands),
+    }
+  );
 
   const text = await response.text();
 
+  if (!response.ok) {
+    throw new Error(
+      `Redis transaction error ${response.status}: ${text}`
+    );
+  }
+
   let data;
 
   try {
     data = JSON.parse(text);
   } catch {
     throw new Error(
-      `Redis multi JSON parse error: ${text.slice(0, 500)}`
+      `Redis transaction invalid JSON: ${text}`
     );
   }
 
-  if (!response.ok) {
+  if (!Array.isArray(data.result)) {
     throw new Error(
-      `Redis multi HTTP ${response.status}: ${
-        data?.error || text.slice(0, 500)
-      }`
+      `Redis transaction invalid result: ${JSON.stringify(data)}`
     );
   }
 
-  if (data?.error) {
-    throw new Error(`Redis multi error: ${data.error}`);
-  }
-
-  const results = data?.result;
-
-  if (!Array.isArray(results)) {
-    throw new Error(
-      `Redis multi invalid result: ${JSON.stringify(data).slice(0, 1000)}`
-    );
-  }
-
-  for (const item of results) {
-    if (item && item.error) {
+  for (const item of data.result) {
+    if (
+      item &&
+      typeof item === "object" &&
+      item.error
+    ) {
       throw new Error(
         `Redis transaction command error: ${JSON.stringify(item)}`
       );
     }
   }
 
-  return results;
+  return data.result;
 }
 
-// ============================================================
-// Utility
-// ============================================================
+
+/* =========================================================
+   Telegram
+========================================================= */
+
+async function telegram(method, body) {
+  const response = await fetch(
+    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(
+      `Telegram error ${response.status}: ${text}`
+    );
+  }
+
+  let data;
+
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(
+      `Telegram invalid JSON: ${text}`
+    );
+  }
+
+  if (!data.ok) {
+    throw new Error(
+      `Telegram API error: ${JSON.stringify(data)}`
+    );
+  }
+
+  return data;
+}
+
+
+/* =========================================================
+   Utility
+========================================================= */
 
 function pad2(value) {
   return String(value).padStart(2, "0");
 }
 
-function getJstNow() {
-  const now = new Date();
 
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Tokyo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(now);
+function getDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = pad2(date.getMonth() + 1);
+  const day = pad2(date.getDate());
 
-  const map = {};
-
-  for (const part of parts) {
-    if (part.type !== "literal") {
-      map[part.type] = part.value;
-    }
-  }
-
-  return new Date(
-    Number(map.year),
-    Number(map.month) - 1,
-    Number(map.day),
-    Number(map.hour),
-    Number(map.minute),
-    Number(map.second)
-  );
+  return `${year}-${month}-${day}`;
 }
 
-function getDateKey(date = getJstNow()) {
-  return (
-    `${date.getFullYear()}-` +
-    `${pad2(date.getMonth() + 1)}-` +
-    `${pad2(date.getDate())}`
-  );
+
+function getMonthKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = pad2(date.getMonth() + 1);
+
+  return `${year}-${month}`;
 }
 
-function getMonthKey(date = getJstNow()) {
-  return (
-    `${date.getFullYear()}-` +
-    `${pad2(date.getMonth() + 1)}`
-  );
-}
 
-function getYearKey(date = getJstNow()) {
+function getYearKey(date = new Date()) {
   return String(date.getFullYear());
 }
 
-function getRecordId() {
-  return (
-    `${Date.now()}-` +
-    Math.random().toString(36).slice(2, 10)
-  );
-}
 
 function formatNumber(value) {
   return Number(value || 0).toLocaleString("ja-JP");
 }
 
-function calcAverage(totalSales, totalOrders) {
-  if (!totalOrders) {
+
+function toInt(value) {
+  const number = Number(value);
+
+  if (!Number.isFinite(number)) {
     return 0;
   }
 
-  return Math.floor(
-    Number(totalSales || 0) /
-      Number(totalOrders || 0)
+  return Math.trunc(number);
+}
+
+
+function createRecordId() {
+  return (
+    Date.now().toString(36) +
+    Math.random().toString(36).slice(2, 8)
   );
 }
 
-// ============================================================
-// Redis keys
-// ============================================================
+
+/* =========================================================
+   Redis key
+========================================================= */
 
 function dailyKey(dateKey) {
   return `moheji:delivery:daily:${dateKey}`;
 }
 
-function monthRedisKey(month) {
+
+function monthKey(month) {
   return `moheji:delivery:month:${month}`;
 }
 
-function yearRedisKey(year) {
+
+function yearKey(year) {
   return `moheji:delivery:year:${year}`;
 }
 
+
 function alltimeKey() {
-  return `moheji:delivery:alltime`;
+  return "moheji:delivery:alltime";
 }
+
 
 function individualRecordKey(chatId, recordId) {
   return `moheji:delivery:record:${chatId}:${recordId}`;
 }
 
-// ============================================================
-// Hash
-// ============================================================
+
+/* =========================================================
+   Hash helpers
+========================================================= */
 
 async function getHash(key) {
   const result = await redis("HGETALL", key);
@@ -232,13 +246,13 @@ async function getHash(key) {
   }
 
   if (Array.isArray(result)) {
-    const hash = {};
+    const object = {};
 
     for (let i = 0; i < result.length; i += 2) {
-      hash[result[i]] = result[i + 1];
+      object[result[i]] = result[i + 1];
     }
 
-    return hash;
+    return object;
   }
 
   if (typeof result === "object") {
@@ -248,128 +262,104 @@ async function getHash(key) {
   return {};
 }
 
-function hashNumber(hash, field) {
-  return Number(hash?.[field] || 0);
-}
 
-// ============================================================
-// Telegram
-// ============================================================
-
-async function telegram(method, payload) {
-  const response = await fetch(
-    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    }
+async function getHashNumber(key, field) {
+  const value = await redis(
+    "HGET",
+    key,
+    field
   );
 
-  const text = await response.text();
-
-  let data;
-
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(
-      `Telegram JSON parse error: ${text.slice(0, 500)}`
-    );
-  }
-
-  if (!response.ok || !data.ok) {
-    throw new Error(
-      `Telegram ${method} error: ${JSON.stringify(data)}`
-    );
-  }
-
-  return data;
+  return toInt(value);
 }
 
-async function sendMessage(chatId, text) {
-  return telegram("sendMessage", {
-    chat_id: chatId,
-    text,
-  });
-}
 
-async function sendPhoto(chatId, caption) {
-  return telegram("sendPhoto", {
-    chat_id: chatId,
-    photo: SALES_IMAGE_URL,
-    caption,
-  });
-}
+/* =========================================================
+   SCAN
+========================================================= */
 
-// ============================================================
-// SCAN individual records
-//
-// IMPORTANT
-// NEVER use:
-// moheji:delivery:records:${chatId}
-//
-// NEVER use ZREVRANGE.
-// NEVER use ZADD.
-// ============================================================
-
-async function scanIndividualRecordKeys(chatId) {
+async function scanKeys(match) {
   let cursor = "0";
-
   const keys = [];
-
-  const pattern =
-    `moheji:delivery:record:${chatId}:*`;
 
   do {
     const result = await redis(
       "SCAN",
       cursor,
       "MATCH",
-      pattern,
+      match,
       "COUNT",
       "100"
     );
 
-    if (!Array.isArray(result)) {
-      throw new Error(
-        `Unexpected SCAN result: ${JSON.stringify(result)}`
-      );
-    }
+    const nextCursor = result?.[0];
+    const foundKeys = result?.[1] || [];
 
-    cursor = String(result[0] ?? "0");
+    cursor = String(nextCursor);
 
-    const found = Array.isArray(result[1])
-      ? result[1]
-      : [];
-
-    for (const key of found) {
-      if (typeof key === "string") {
-        keys.push(key);
-      }
+    if (Array.isArray(foundKeys)) {
+      keys.push(...foundKeys);
     }
   } while (cursor !== "0");
 
-  return [...new Set(keys)];
+  return keys;
 }
 
-// ============================================================
-// Individual record history
-//
-// Intentionally uses individual GET calls.
-// This avoids another multi-exec/type issue in /record.
-// ============================================================
 
+/* =========================================================
+   Individual records
+========================================================= */
+
+/*
+  重要：
+  旧コードで使っていた
+
+    moheji:delivery:records:${chatId}
+
+  は一切使用しない。
+
+  個別記録は
+
+    moheji:delivery:record:${chatId}:${recordId}
+
+  のみをSCANして取得する。
+*/
+
+async function scanIndividualRecordKeys(chatId) {
+  return await scanKeys(
+    `moheji:delivery:record:${chatId}:*`
+  );
+}
+
+
+/*
+  古い記録には monthKey / yearKey が無い場合がある。
+
+  その場合、
+
+    dateKey = 2026-10-05
+
+  から
+
+    monthKey = 2026-10
+    yearKey  = 2026
+
+  を自動補完する。
+
+  Redis自体は書き換えない。
+*/
 async function getRecordHistory(chatId) {
-  const keys = await scanIndividualRecordKeys(chatId);
+  const keys =
+    await scanIndividualRecordKeys(chatId);
 
   const records = [];
 
   for (const key of keys) {
     try {
-      const raw = await redis("GET", key);
+      const raw = await redis(
+        "GET",
+        key
+      );
 
       if (!raw) {
         continue;
@@ -381,11 +371,44 @@ async function getRecordHistory(chatId) {
           : raw;
 
       if (
-        record &&
-        typeof record === "object"
+        !record ||
+        typeof record !== "object"
       ) {
-        records.push(record);
+        continue;
       }
+
+      /*
+        古い記録の monthKey / yearKey を
+        dateKey から補完
+      */
+      if (
+        record.dateKey &&
+        /^\d{4}-\d{2}-\d{2}$/.test(
+          String(record.dateKey)
+        )
+      ) {
+        const dateParts =
+          String(record.dateKey).split("-");
+
+        const derivedMonth =
+          `${dateParts[0]}-${dateParts[1]}`;
+
+        const derivedYear =
+          dateParts[0];
+
+        if (!record.monthKey) {
+          record.monthKey =
+            derivedMonth;
+        }
+
+        if (!record.yearKey) {
+          record.yearKey =
+            derivedYear;
+        }
+      }
+
+      records.push(record);
+
     } catch (error) {
       console.error(
         "individual record read error:",
@@ -408,83 +431,56 @@ async function getRecordHistory(chatId) {
   return records;
 }
 
-async function getLatestActiveRecord(chatId) {
-  const records =
-    await getRecordHistory(chatId);
 
-  for (const record of records) {
-    if (record.cancelled !== true) {
-      return record;
-    }
-  }
+/* =========================================================
+   Working days
+========================================================= */
 
-  return null;
-}
+/*
+  旧
 
-// ============================================================
-// Calculate working days
-//
-// NEVER use:
-// moheji:delivery:workingdays:${month}
-// ============================================================
+    moheji:delivery:workingdays:${month}
+
+  は使用しない。
+
+  daily キーを SCAN して、
+  orders > 0 の日を稼働日として数える。
+*/
 
 async function getWorkingDays(month) {
-  let cursor = "0";
-
-  const keys = [];
-
-  const pattern =
-    `moheji:delivery:daily:${month}-*`;
-
-  do {
-    const result = await redis(
-      "SCAN",
-      cursor,
-      "MATCH",
-      pattern,
-      "COUNT",
-      "100"
-    );
-
-    if (!Array.isArray(result)) {
-      throw new Error(
-        `Unexpected working-day SCAN result: ${JSON.stringify(result)}`
-      );
-    }
-
-    cursor = String(result[0] ?? "0");
-
-    const found = Array.isArray(result[1])
-      ? result[1]
-      : [];
-
-    for (const key of found) {
-      keys.push(key);
-    }
-  } while (cursor !== "0");
+  const keys = await scanKeys(
+    `moheji:delivery:daily:${month}-*`
+  );
 
   let workingDays = 0;
 
-  for (const key of [...new Set(keys)]) {
-    const orders = await redis(
-      "HGET",
-      key,
-      "orders"
-    );
+  for (const key of keys) {
+    try {
+      const orders =
+        await getHashNumber(
+          key,
+          "orders"
+        );
 
-    if (Number(orders || 0) > 0) {
-      workingDays++;
+      if (orders > 0) {
+        workingDays++;
+      }
+    } catch (error) {
+      console.error(
+        "working day read error:",
+        key,
+        error
+      );
     }
   }
 
   return workingDays;
 }
 
-// ============================================================
-// Recalculate monthly best from ACTIVE individual records
-//
-// This is the important cancellation fix.
-// ============================================================
+
+/* =========================================================
+   Monthly best recalculation
+========================================================= */
 
 async function recalculateMonthlyBestFromRecords(
   chatId,
@@ -494,39 +490,50 @@ async function recalculateMonthlyBestFromRecords(
     await getRecordHistory(chatId);
 
   const activeRecords =
-    records.filter(
-      (record) =>
-        record.cancelled !== true &&
-        record.monthKey === month
-    );
+    records.filter((record) => {
+      if (record.cancelled) {
+        return false;
+      }
+
+      const recordMonth =
+        record.monthKey ||
+        (
+          record.dateKey &&
+          /^\d{4}-\d{2}-\d{2}$/.test(
+            String(record.dateKey)
+          )
+            ? String(record.dateKey).slice(0, 7)
+            : ""
+        );
+
+      return recordMonth === month;
+    });
 
   let bestSales = 0;
   let bestOrders = 0;
 
   for (const record of activeRecords) {
-    const sales =
-      Number(record.sales || 0);
+    bestSales = Math.max(
+      bestSales,
+      toInt(record.sales)
+    );
 
-    const orders =
-      Number(record.orders || 0);
-
-    if (sales > bestSales) {
-      bestSales = sales;
-    }
-
-    if (orders > bestOrders) {
-      bestOrders = orders;
-    }
+    bestOrders = Math.max(
+      bestOrders,
+      toInt(record.orders)
+    );
   }
 
-  await redis(
-    "HSET",
-    monthRedisKey(month),
-    "bestSales",
-    bestSales,
-    "bestOrders",
-    bestOrders
-  );
+  await redisMulti([
+    [
+      "HSET",
+      monthKey(month),
+      "bestSales",
+      String(bestSales),
+      "bestOrders",
+      String(bestOrders),
+    ],
+  ]);
 
   return {
     bestSales,
@@ -534,9 +541,10 @@ async function recalculateMonthlyBestFromRecords(
   };
 }
 
-// ============================================================
-// Recalculate daily best from ACTIVE individual records
-// ============================================================
+
+/* =========================================================
+   Daily best recalculation
+========================================================= */
 
 async function recalculateDailyBestFromRecords(
   chatId,
@@ -546,39 +554,39 @@ async function recalculateDailyBestFromRecords(
     await getRecordHistory(chatId);
 
   const activeRecords =
-    records.filter(
-      (record) =>
-        record.cancelled !== true &&
-        record.dateKey === dateKey
-    );
+    records.filter((record) => {
+      return (
+        !record.cancelled &&
+        String(record.dateKey) ===
+          String(dateKey)
+      );
+    });
 
   let bestSales = 0;
   let bestOrders = 0;
 
   for (const record of activeRecords) {
-    const sales =
-      Number(record.sales || 0);
+    bestSales = Math.max(
+      bestSales,
+      toInt(record.sales)
+    );
 
-    const orders =
-      Number(record.orders || 0);
-
-    if (sales > bestSales) {
-      bestSales = sales;
-    }
-
-    if (orders > bestOrders) {
-      bestOrders = orders;
-    }
+    bestOrders = Math.max(
+      bestOrders,
+      toInt(record.orders)
+    );
   }
 
-  await redis(
-    "HSET",
-    dailyKey(dateKey),
-    "bestSales",
-    bestSales,
-    "bestOrders",
-    bestOrders
-  );
+  await redisMulti([
+    [
+      "HSET",
+      dailyKey(dateKey),
+      "bestSales",
+      String(bestSales),
+      "bestOrders",
+      String(bestOrders),
+    ],
+  ]);
 
   return {
     bestSales,
@@ -586,124 +594,114 @@ async function recalculateDailyBestFromRecords(
   };
 }
 
-// ============================================================
-// /sales
-// ============================================================
+
+/* =========================================================
+   Sales processing
+========================================================= */
 
 async function processSales(
   chatId,
   sales,
   orders
 ) {
-  const now = getJstNow();
+  const now = new Date();
 
-  const dateKey =
-    getDateKey(now);
-
-  const month =
-    getMonthKey(now);
-
-  const year =
-    getYearKey(now);
+  const dateKey = getDateKey(now);
+  const month = getMonthKey(now);
+  const year = getYearKey(now);
 
   const recordId =
-    getRecordId();
+    createRecordId();
 
   const record = {
-    id: recordId,
-
+    recordId,
     chatId: String(chatId),
-
-    sales: Number(sales),
-    orders: Number(orders),
 
     dateKey,
     monthKey: month,
     yearKey: year,
 
-    createdAt: now.toISOString(),
+    sales,
+    orders,
 
     cancelled: false,
+
+    createdAt:
+      now.toISOString(),
   };
 
-  const recordKey =
-    individualRecordKey(
-      chatId,
-      recordId
-    );
-
   const commands = [
-    // Daily
     [
       "HINCRBY",
       dailyKey(dateKey),
       "sales",
-      Number(sales),
+      String(sales),
     ],
 
     [
       "HINCRBY",
       dailyKey(dateKey),
       "orders",
-      Number(orders),
+      String(orders),
     ],
 
-    // Monthly
     [
       "HINCRBY",
-      monthRedisKey(month),
+      monthKey(month),
       "sales",
-      Number(sales),
+      String(sales),
     ],
 
     [
       "HINCRBY",
-      monthRedisKey(month),
+      monthKey(month),
       "orders",
-      Number(orders),
+      String(orders),
     ],
 
-    // Year
     [
       "HINCRBY",
-      yearRedisKey(year),
+      yearKey(year),
       "sales",
-      Number(sales),
+      String(sales),
     ],
 
     [
       "HINCRBY",
-      yearRedisKey(year),
+      yearKey(year),
       "orders",
-      Number(orders),
+      String(orders),
     ],
 
-    // All time
     [
       "HINCRBY",
       alltimeKey(),
       "sales",
-      Number(sales),
+      String(sales),
     ],
 
     [
       "HINCRBY",
       alltimeKey(),
       "orders",
-      Number(orders),
+      String(orders),
     ],
 
-    // Individual record
     [
       "SET",
-      recordKey,
+      individualRecordKey(
+        chatId,
+        recordId
+      ),
       JSON.stringify(record),
     ],
   ];
 
   await redisMulti(commands);
 
-  // Recalculate best values AFTER the record exists.
+  /*
+    最高値は個別記録から再計算
+  */
   await recalculateDailyBestFromRecords(
     chatId,
     dateKey
@@ -717,155 +715,184 @@ async function processSales(
   return record;
 }
 
-// ============================================================
-// /cancel
-// ============================================================
+
+/* =========================================================
+   Cancel latest active sale
+========================================================= */
 
 async function cancelLatestSale(chatId) {
-  const record =
-    await getLatestActiveRecord(chatId);
+  const records =
+    await getRecordHistory(chatId);
 
-  if (!record) {
-    return {
-      ok: false,
-      message:
-        "❌ キャンセルできる配達売上がありません。",
-    };
+  const latest =
+    records.find(
+      (record) =>
+        !record.cancelled
+    );
+
+  if (!latest) {
+    return null;
   }
 
   const sales =
-    Number(record.sales || 0);
+    toInt(latest.sales);
 
   const orders =
-    Number(record.orders || 0);
+    toInt(latest.orders);
 
-  const dateKey =
-    record.dateKey;
+  const originalDate =
+    latest.dateKey;
 
-  const month =
-    record.monthKey;
+  /*
+    古い記録にも対応
+  */
+  let originalMonth =
+    latest.monthKey;
 
-  const year =
-    record.yearKey;
+  if (
+    !originalMonth &&
+    originalDate &&
+    /^\d{4}-\d{2}-\d{2}$/.test(
+      String(originalDate)
+    )
+  ) {
+    originalMonth =
+      String(originalDate).slice(0, 7);
+  }
 
-  const updatedRecord = {
-    ...record,
+  let originalYear =
+    latest.yearKey;
 
+  if (
+    !originalYear &&
+    originalDate &&
+    /^\d{4}-\d{2}-\d{2}$/.test(
+      String(originalDate)
+    )
+  ) {
+    originalYear =
+      String(originalDate).slice(0, 4);
+  }
+
+  if (
+    !originalDate ||
+    !originalMonth ||
+    !originalYear
+  ) {
+    throw new Error(
+      "キャンセル対象の記録に日付情報がありません。"
+    );
+  }
+
+  const key =
+    individualRecordKey(
+      chatId,
+      latest.recordId
+    );
+
+  const cancelledRecord = {
+    ...latest,
     cancelled: true,
-
     cancelledAt:
       new Date().toISOString(),
   };
 
   const commands = [
-    // Original day
     [
       "HINCRBY",
-      dailyKey(dateKey),
+      dailyKey(originalDate),
       "sales",
-      -sales,
+      String(-sales),
     ],
 
     [
       "HINCRBY",
-      dailyKey(dateKey),
+      dailyKey(originalDate),
       "orders",
-      -orders,
+      String(-orders),
     ],
 
-    // Original month
     [
       "HINCRBY",
-      monthRedisKey(month),
+      monthKey(originalMonth),
       "sales",
-      -sales,
+      String(-sales),
     ],
 
     [
       "HINCRBY",
-      monthRedisKey(month),
+      monthKey(originalMonth),
       "orders",
-      -orders,
+      String(-orders),
     ],
 
-    // Original year
     [
       "HINCRBY",
-      yearRedisKey(year),
+      yearKey(originalYear),
       "sales",
-      -sales,
+      String(-sales),
     ],
 
     [
       "HINCRBY",
-      yearRedisKey(year),
+      yearKey(originalYear),
       "orders",
-      -orders,
+      String(-orders),
     ],
 
-    // All time
     [
       "HINCRBY",
       alltimeKey(),
       "sales",
-      -sales,
+      String(-sales),
     ],
 
     [
       "HINCRBY",
       alltimeKey(),
       "orders",
-      -orders,
+      String(-orders),
     ],
 
-    // Keep audit history.
     [
       "SET",
-      individualRecordKey(
-        chatId,
-        record.id
+      key,
+      JSON.stringify(
+        cancelledRecord
       ),
-      JSON.stringify(updatedRecord),
     ],
   ];
 
   await redisMulti(commands);
 
-  // IMPORTANT:
-  // Recalculate because the cancelled record
-  // may have been the monthly/daily best.
+  /*
+    キャンセルした記録が最高値だった場合、
+    残った有効記録から再計算する。
+  */
   await recalculateDailyBestFromRecords(
     chatId,
-    dateKey
+    originalDate
   );
 
   await recalculateMonthlyBestFromRecords(
     chatId,
-    month
+    originalMonth
   );
 
-  return {
-    ok: true,
-    record: updatedRecord,
-  };
+  return cancelledRecord;
 }
 
-// ============================================================
-// Sales report
-// ============================================================
 
-async function buildSalesReport() {
-  const now =
-    getJstNow();
+/* =========================================================
+   Sales report
+========================================================= */
 
-  const dateKey =
-    getDateKey(now);
+async function buildSalesReport(chatId) {
+  const now = new Date();
 
-  const month =
-    getMonthKey(now);
-
-  const year =
-    getYearKey(now);
+  const dateKey = getDateKey(now);
+  const month = getMonthKey(now);
+  const year = getYearKey(now);
 
   const [
     daily,
@@ -874,78 +901,67 @@ async function buildSalesReport() {
     alltime,
     workingDays,
   ] = await Promise.all([
-    getHash(
-      dailyKey(dateKey)
-    ),
-
-    getHash(
-      monthRedisKey(month)
-    ),
-
-    getHash(
-      yearRedisKey(year)
-    ),
-
-    getHash(
-      alltimeKey()
-    ),
-
+    getHash(dailyKey(dateKey)),
+    getHash(monthKey(month)),
+    getHash(yearKey(year)),
+    getHash(alltimeKey()),
     getWorkingDays(month),
   ]);
 
   const todaySales =
-    hashNumber(daily, "sales");
+    toInt(daily.sales);
 
   const todayOrders =
-    hashNumber(daily, "orders");
+    toInt(daily.orders);
 
-  const monthlySales =
-    hashNumber(monthly, "sales");
+  const monthSales =
+    toInt(monthly.sales);
 
-  const monthlyOrders =
-    hashNumber(monthly, "orders");
+  const monthOrders =
+    toInt(monthly.orders);
 
-  const yearlySales =
-    hashNumber(yearly, "sales");
+  const yearSales =
+    toInt(yearly.sales);
 
-  const yearlyOrders =
-    hashNumber(yearly, "orders");
+  const yearOrders =
+    toInt(yearly.orders);
 
-  const alltimeOrders =
-    hashNumber(alltime, "orders");
+  const totalOrders =
+    toInt(alltime.orders);
 
-  const avgPerDay =
-    workingDays > 0
+  const bestSales =
+    toInt(monthly.bestSales);
+
+  const bestOrders =
+    toInt(monthly.bestOrders);
+
+  const perOrder =
+    todayOrders > 0
       ? Math.floor(
-          monthlySales / workingDays
+          todaySales / todayOrders
         )
       : 0;
 
-  const achievementRate =
-    MONTHLY_TARGET > 0
+  const averagePerDay =
+    workingDays > 0
       ? Math.floor(
-          (monthlySales /
-            MONTHLY_TARGET) *
+          monthSales / workingDays
+        )
+      : 0;
+
+  const achievement =
+    TARGET_MONTHLY > 0
+      ? Math.floor(
+          (monthSales /
+            TARGET_MONTHLY) *
             100
         )
       : 0;
 
-  const bestSales =
-    hashNumber(
-      monthly,
-      "bestSales"
-    );
-
-  const bestOrders =
-    hashNumber(
-      monthly,
-      "bestOrders"
-    );
-
   const timestamp =
     `${now.getFullYear()}年` +
-    `${now.getMonth() + 1}月` +
-    `${now.getDate()}日 ` +
+    `${pad2(now.getMonth() + 1)}月` +
+    `${pad2(now.getDate())}日 ` +
     `${pad2(now.getHours())}:` +
     `${pad2(now.getMinutes())}`;
 
@@ -953,43 +969,30 @@ async function buildSalesReport() {
     `🏍️ 配達売上\n` +
     `💰 今日の売上　${formatNumber(todaySales)}円\n` +
     `📦 今日の件数　${formatNumber(todayOrders)}件\n` +
-    `💵 1件あたり　${formatNumber(
-      calcAverage(
-        todaySales,
-        todayOrders
-      )
-    )}円\n` +
-    `📅 今月売上　${formatNumber(monthlySales)}円\n` +
-    `📦 今月件数　${formatNumber(monthlyOrders)}件\n` +
-    `🗓️ 年間売上　${formatNumber(yearlySales)}円\n` +
-    `📦 年間件数　${formatNumber(yearlyOrders)}件\n` +
-    `📈 平均売上／日　${formatNumber(avgPerDay)}円\n` +
-    `🎯 月間目標　${formatNumber(
-      MONTHLY_TARGET
-    )}円\n` +
-    `📊 目標達成率　${formatNumber(
-      achievementRate
-    )}%\n` +
+    `💵 1件あたり　${formatNumber(perOrder)}円\n` +
+    `📅 今月売上　${formatNumber(monthSales)}円\n` +
+    `📦 今月件数　${formatNumber(monthOrders)}件\n` +
+    `🗓️ 年間売上　${formatNumber(yearSales)}円\n` +
+    `📦 年間件数　${formatNumber(yearOrders)}件\n` +
+    `📈 平均売上／日　${formatNumber(averagePerDay)}円\n` +
+    `🎯 月間目標　${formatNumber(TARGET_MONTHLY)}円\n` +
+    `📊 目標達成率　${formatNumber(achievement)}%\n` +
     `🏆 月間最高売上　${formatNumber(bestSales)}円\n` +
     `🏆 月間最高件数　${formatNumber(bestOrders)}件\n` +
-    `📆 稼働日数　${formatNumber(
-      workingDays
-    )}日\n` +
-    `🛵 累計配達件数　${formatNumber(
-      alltimeOrders
-    )}件\n` +
+    `📆 稼働日数　${formatNumber(workingDays)}日\n` +
+    `🛵 累計配達件数　${formatNumber(totalOrders)}件\n` +
     `🕐 ${timestamp}\n` +
     `🛵 今日も配達お疲れ様でした！`
   );
 }
 
-// ============================================================
-// /record report
-// ============================================================
+
+/* =========================================================
+   Record report
+========================================================= */
 
 async function buildRecordReport(chatId) {
-  const now =
-    getJstNow();
+  const now = new Date();
 
   const currentMonth =
     getMonthKey(now);
@@ -997,63 +1000,156 @@ async function buildRecordReport(chatId) {
   const records =
     await getRecordHistory(chatId);
 
+  /*
+    有効記録
+  */
   const activeRecords =
     records.filter(
       (record) =>
-        record.cancelled !== true
+        !record.cancelled
     );
 
-  // ----------------------------------------------------------
-  // Current month Redis
-  // ----------------------------------------------------------
+  /*
+    月別集計
+  */
+  const monthlyMap = {};
 
-  const currentMonthRedis =
+  for (const record of activeRecords) {
+    const month =
+      record.monthKey ||
+      (
+        record.dateKey &&
+        /^\d{4}-\d{2}-\d{2}$/.test(
+          String(record.dateKey)
+        )
+          ? String(record.dateKey).slice(0, 7)
+          : "不明"
+      );
+
+    if (!monthlyMap[month]) {
+      monthlyMap[month] = {
+        sales: 0,
+        orders: 0,
+        bestSales: 0,
+        bestOrders: 0,
+      };
+    }
+
+    monthlyMap[month].sales +=
+      toInt(record.sales);
+
+    monthlyMap[month].orders +=
+      toInt(record.orders);
+
+    monthlyMap[month].bestSales =
+      Math.max(
+        monthlyMap[month].bestSales,
+        toInt(record.sales)
+      );
+
+    monthlyMap[month].bestOrders =
+      Math.max(
+        monthlyMap[month].bestOrders,
+        toInt(record.orders)
+      );
+  }
+
+  /*
+    月別表示
+  */
+  const monthList =
+    Object.keys(monthlyMap)
+      .sort()
+      .reverse();
+
+  let monthlyText = "";
+
+  if (monthList.length === 0) {
+    monthlyText =
+      "📅 記録なし\n";
+  } else {
+    for (const month of monthList) {
+      const item =
+        monthlyMap[month];
+
+      monthlyText +=
+        `📅 ${month}\n` +
+        `💰 売上　${formatNumber(item.sales)}円\n` +
+        `📦 件数　${formatNumber(item.orders)}件\n` +
+        `🏆 最高売上　${formatNumber(item.bestSales)}円\n` +
+        `🏆 最高件数　${formatNumber(item.bestOrders)}件\n\n`;
+    }
+  }
+
+  /*
+    個別履歴
+  */
+  let historyText = "";
+
+  if (records.length === 0) {
+    historyText =
+      "記録なし\n";
+  } else {
+    for (const record of records) {
+      const status =
+        record.cancelled
+          ? "❌取消"
+          : "✅有効";
+
+      historyText +=
+        `${record.dateKey || "日付不明"} ` +
+        `${formatNumber(record.sales)}円 / ` +
+        `${formatNumber(record.orders)}件 ` +
+        `${status}\n`;
+    }
+  }
+
+  /*
+    今月の個別記録
+  */
+  const monthRecords =
+    activeRecords.filter((record) => {
+      const recordMonth =
+        record.monthKey ||
+        (
+          record.dateKey &&
+          /^\d{4}-\d{2}-\d{2}$/.test(
+            String(record.dateKey)
+          )
+            ? String(record.dateKey).slice(0, 7)
+            : ""
+        );
+
+      return (
+        recordMonth ===
+        currentMonth
+      );
+    });
+
+  let individualMonthSales = 0;
+  let individualMonthOrders = 0;
+
+  for (const record of monthRecords) {
+    individualMonthSales +=
+      toInt(record.sales);
+
+    individualMonthOrders +=
+      toInt(record.orders);
+  }
+
+  /*
+    Redis側
+  */
+  const monthly =
     await getHash(
-      monthRedisKey(currentMonth)
+      monthKey(currentMonth)
     );
 
   const redisMonthSales =
-    hashNumber(
-      currentMonthRedis,
-      "sales"
-    );
+    toInt(monthly.sales);
 
   const redisMonthOrders =
-    hashNumber(
-      currentMonthRedis,
-      "orders"
-    );
-
-  // ----------------------------------------------------------
-  // Individual current month
-  // ----------------------------------------------------------
-
-  const monthRecords =
-    activeRecords.filter(
-      (record) =>
-        record.monthKey ===
-        currentMonth
-    );
-
-  const individualMonthSales =
-    monthRecords.reduce(
-      (sum, record) =>
-        sum +
-        Number(
-          record.sales || 0
-        ),
-      0
-    );
-
-  const individualMonthOrders =
-    monthRecords.reduce(
-      (sum, record) =>
-        sum +
-        Number(
-          record.orders || 0
-        ),
-      0
-    );
+    toInt(monthly.orders);
 
   const salesDiff =
     redisMonthSales -
@@ -1063,214 +1159,88 @@ async function buildRecordReport(chatId) {
     redisMonthOrders -
     individualMonthOrders;
 
-  // ----------------------------------------------------------
-  // Monthly summary from individual records
-  // ----------------------------------------------------------
-
-  const monthlySummary = {};
-
-  for (const record of activeRecords) {
-    const month =
-      record.monthKey ||
-      "不明";
-
-    if (!monthlySummary[month]) {
-      monthlySummary[month] = {
-        sales: 0,
-        orders: 0,
-        bestSales: 0,
-        bestOrders: 0,
-      };
-    }
-
-    const sales =
-      Number(record.sales || 0);
-
-    const orders =
-      Number(record.orders || 0);
-
-    monthlySummary[month].sales +=
-      sales;
-
-    monthlySummary[month].orders +=
-      orders;
-
-    if (
-      sales >
-      monthlySummary[month].bestSales
-    ) {
-      monthlySummary[month].bestSales =
-        sales;
-    }
-
-    if (
-      orders >
-      monthlySummary[month].bestOrders
-    ) {
-      monthlySummary[month].bestOrders =
-        orders;
-    }
-  }
-
-  // ----------------------------------------------------------
-  // Report
-  // ----------------------------------------------------------
-
-  let text =
-    "📋 配達売上記録\n\n";
-
-  const months =
-    Object.keys(
-      monthlySummary
-    ).sort().reverse();
-
-  if (months.length === 0) {
-    text +=
-      "個別記録はありません。\n";
-  } else {
-    text +=
-      "【個別記録 月別集計】\n";
-
-    for (const month of months) {
-      const item =
-        monthlySummary[month];
-
-      text +=
-        `📅 ${month}\n` +
-        `💰 売上　${formatNumber(
-          item.sales
-        )}円\n` +
-        `📦 件数　${formatNumber(
-          item.orders
-        )}件\n` +
-        `🏆 最高売上　${formatNumber(
-          item.bestSales
-        )}円\n` +
-        `🏆 最高件数　${formatNumber(
-          item.bestOrders
-        )}件\n\n`;
-    }
-  }
-
-  // ----------------------------------------------------------
-  // Individual history
-  // ----------------------------------------------------------
-
-  text +=
-    "【個別売上履歴】\n";
-
-  if (records.length === 0) {
-    text += "記録なし\n";
-  } else {
-    const displayRecords =
-      records.slice(0, 30);
-
-    for (const record of displayRecords) {
-      const status =
-        record.cancelled === true
-          ? "❌取消"
-          : "✅有効";
-
-      text +=
-        `${record.dateKey || "-"} ` +
-        `${formatNumber(
-          record.sales
-        )}円 / ` +
-        `${formatNumber(
-          record.orders
-        )}件 ` +
-        `${status}\n`;
-    }
-
-    if (records.length > 30) {
-      text +=
-        `…ほか ${
-          records.length - 30
-        }件\n`;
-    }
-  }
-
-  // ----------------------------------------------------------
-  // Current month audit
-  // ----------------------------------------------------------
-
-  text +=
-    "\n【今月照合】\n";
-
-  text +=
-    `個別記録　${formatNumber(
-      individualMonthSales
-    )}円 / ${formatNumber(
-      individualMonthOrders
-    )}件\n`;
-
-  text +=
-    `Redis集計　${formatNumber(
-      redisMonthSales
-    )}円 / ${formatNumber(
-      redisMonthOrders
-    )}件\n`;
-
-  text +=
-    `差額　${formatNumber(
-      salesDiff
-    )}円 / ${formatNumber(
-      ordersDiff
-    )}件\n`;
-
-  if (
-    salesDiff === 0 &&
-    ordersDiff === 0
-  ) {
-    text +=
-      "✅ 個別記録とRedis集計は一致しています。\n";
-  } else {
-    text +=
-      "⚠️ 個別記録とRedis集計に差があります。\n" +
-      "※既存の集計値は自動修正していません。\n";
-  }
-
-  // ----------------------------------------------------------
-  // Working days
-  // ----------------------------------------------------------
-
-  try {
-    const workingDays =
-      await getWorkingDays(
-        currentMonth
-      );
-
-    text +=
-      `📆 今月の稼働日数　${formatNumber(
-        workingDays
-      )}日\n`;
-  } catch (error) {
-    console.error(
-      "working days error:",
-      error
+  const workingDays =
+    await getWorkingDays(
+      currentMonth
     );
 
-    text +=
-      "📆 今月の稼働日数　取得エラー\n";
-  }
+  /*
+    差額がある場合は警告。
+    既存Redis集計は自動修正しない。
+  */
+  const warning =
+    salesDiff !== 0 ||
+    ordersDiff !== 0
+      ? "\n⚠️ 個別記録とRedis集計に差があります。\n" +
+        "※既存の集計値は自動修正していません。"
+      : "";
 
-  return text;
+  return (
+    `配達売上記録\n\n` +
+
+    `【個別記録 月別集計】\n` +
+    monthlyText +
+
+    `【個別売上履歴】\n` +
+    historyText +
+
+    `\n【今月照合】\n` +
+    `個別記録　${formatNumber(individualMonthSales)}円 / ` +
+    `${formatNumber(individualMonthOrders)}件\n` +
+
+    `Redis集計　${formatNumber(redisMonthSales)}円 / ` +
+    `${formatNumber(redisMonthOrders)}件\n` +
+
+    `差額　${formatNumber(salesDiff)}円 / ` +
+    `${formatNumber(ordersDiff)}件\n` +
+
+    warning +
+
+    `\n📆 今月の稼働日数　${formatNumber(workingDays)}日`
+  );
 }
 
-// ============================================================
-// /sales
-// ============================================================
+
+/* =========================================================
+   Command parser
+========================================================= */
+
+function parseCommand(text) {
+  if (!text) {
+    return null;
+  }
+
+  const trimmed =
+    String(text).trim();
+
+  if (!trimmed.startsWith("/")) {
+    return null;
+  }
+
+  const parts =
+    trimmed.split(/\s+/);
+
+  const command =
+    parts[0]
+      .split("@")[0]
+      .toLowerCase();
+
+  return {
+    command,
+    args: parts.slice(1),
+  };
+}
+
+
+/* =========================================================
+   /sales
+========================================================= */
 
 async function handleSales(
   chatId,
   args
 ) {
   if (args.length !== 2) {
-    await sendMessage(
-      chatId,
-      "❗ 使い方：\n/sales 売上 件数\n\n例：\n/sales 17014 17"
-    );
-
     return;
   }
 
@@ -1282,71 +1252,83 @@ async function handleSales(
 
   if (
     !Number.isFinite(sales) ||
-    !Number.isFinite(orders) ||
+    !Number.isFinite(orders)
+  ) {
+    return;
+  }
+
+  if (
     sales < 0 ||
     orders < 0
   ) {
-    await sendMessage(
-      chatId,
-      "❗ 売上と件数は数字で入力してください。"
-    );
-
     return;
   }
 
   await processSales(
     chatId,
-    Math.floor(sales),
-    Math.floor(orders)
+    Math.trunc(sales),
+    Math.trunc(orders)
   );
 
   const report =
-    await buildSalesReport();
+    await buildSalesReport(
+      chatId
+    );
 
-  await sendPhoto(
-    chatId,
-    report
+  /*
+    画像付きで送信
+  */
+  await telegram(
+    "sendPhoto",
+    {
+      chat_id: chatId,
+      photo: SALES_IMAGE_URL,
+      caption: report,
+    }
   );
 }
 
-// ============================================================
-// /cancel
-// ============================================================
+
+/* =========================================================
+   /cancel
+========================================================= */
 
 async function handleCancel(chatId) {
-  const result =
+  const cancelled =
     await cancelLatestSale(
       chatId
     );
 
-  if (!result.ok) {
-    await sendMessage(
-      chatId,
-      result.message
+  if (!cancelled) {
+    await telegram(
+      "sendMessage",
+      {
+        chat_id: chatId,
+        text:
+          "⚠️ キャンセルできる売上記録がありません。",
+      }
     );
 
     return;
   }
 
-  const record =
-    result.record;
-
-  await sendMessage(
-    chatId,
-    `✅ 最新の売上をキャンセルしました。\n\n` +
-      `📅 ${record.dateKey}\n` +
-      `💰 ${formatNumber(
-        record.sales
-      )}円\n` +
-      `📦 ${formatNumber(
-        record.orders
-      )}件`
+  await telegram(
+    "sendMessage",
+    {
+      chat_id: chatId,
+      text:
+        `↩️ 最新の売上をキャンセルしました。\n\n` +
+        `📅 ${cancelled.dateKey}\n` +
+        `💰 ${formatNumber(cancelled.sales)}円\n` +
+        `📦 ${formatNumber(cancelled.orders)}件`,
+    }
   );
 }
 
-// ============================================================
-// /record
-// ============================================================
+
+/* =========================================================
+   /record
+========================================================= */
 
 async function handleRecord(chatId) {
   const report =
@@ -1354,144 +1336,131 @@ async function handleRecord(chatId) {
       chatId
     );
 
-  await sendMessage(
-    chatId,
-    report
+  await telegram(
+    "sendMessage",
+    {
+      chat_id: chatId,
+      text: report,
+    }
   );
 }
 
-// ============================================================
-// Update handler
-// ============================================================
 
-async function handleUpdate(update) {
+/* =========================================================
+   Main Telegram handler
+========================================================= */
+
+async function handleTelegramUpdate(update) {
   const message =
     update?.message;
 
-  if (!message?.chat?.id) {
+  if (!message) {
     return;
   }
-
-  const rawText =
-    String(
-      message.text || ""
-    ).trim();
-
-  if (!rawText) {
-    return;
-  }
-
-  if (!rawText.startsWith("/")) {
-    return;
-  }
-
-  const parts =
-    rawText.split(/\s+/);
-
-  const command =
-    String(parts[0] || "")
-      .split("@")[0]
-      .toLowerCase();
-
-  const args =
-    parts.slice(1);
 
   const chatId =
-    message.chat.id;
+    message.chat?.id;
 
-  // Only these 3 commands respond.
-  if (command === "/sales") {
-    await handleSales(
-      chatId,
-      args
-    );
-
+  if (!chatId) {
     return;
   }
 
-  if (command === "/cancel") {
-    await handleCancel(
-      chatId
-    );
+  const text =
+    message.text;
 
+  const parsed =
+    parseCommand(text);
+
+  /*
+    コマンド以外は何もしない
+  */
+  if (!parsed) {
     return;
   }
 
-  if (command === "/record") {
-    await handleRecord(
-      chatId
-    );
+  switch (parsed.command) {
+    case "/sales":
+      await handleSales(
+        chatId,
+        parsed.args
+      );
+      break;
 
-    return;
+    case "/cancel":
+      await handleCancel(
+        chatId
+      );
+      break;
+
+    case "/record":
+      await handleRecord(
+        chatId
+      );
+      break;
+
+    default:
+      /*
+        他のコマンドには反応しない
+      */
+      return;
   }
-
-  // All other commands are ignored.
 }
 
-// ============================================================
-// Vercel
-// ============================================================
+
+/* =========================================================
+   Vercel entry point
+========================================================= */
 
 export default async function handler(
   req,
   res
 ) {
   if (req.method !== "POST") {
-    return res.status(200).json({
-      ok: true,
-    });
+    res.status(200).send("OK");
+    return;
   }
 
   try {
-    await handleUpdate(
+    await handleTelegramUpdate(
       req.body
     );
-
-    return res.status(200).json({
-      ok: true,
-    });
   } catch (error) {
     console.error(
       "telegram handler error:",
       error
     );
 
-    // Important:
-    // Tell Telegram user what happened instead of
-    // silently returning nothing.
+    /*
+      Telegram側にもエラー通知
+    */
     try {
       const chatId =
         req.body?.message?.chat?.id;
 
       if (chatId) {
         const message =
-          String(
-            error?.message ||
-              error ||
-              "unknown error"
-          );
+          error?.message ||
+          String(error);
 
-        await sendMessage(
-          chatId,
-          `⚠️ 処理中にエラーが発生しました。\n\n${message.slice(
-            0,
-            3000
-          )}`
+        await telegram(
+          "sendMessage",
+          {
+            chat_id: chatId,
+            text:
+              `⚠️ 処理中にエラーが発生しました。\n\n${message}`,
+          }
         );
       }
-    } catch (sendError) {
+    } catch (telegramError) {
       console.error(
-        "error message send failed:",
-        sendError
+        "telegram error message failed:",
+        telegramError
       );
     }
-
-    return res.status(200).json({
-      ok: false,
-      error: String(
-        error?.message ||
-          error
-      ),
-    });
   }
+
+  /*
+    Telegram webhookには200を返す
+  */
+  res.status(200).send("OK");
 }
