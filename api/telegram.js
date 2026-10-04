@@ -1,913 +1,1028 @@
-// api/telegram.js
+export default async function handler(req, res) {
+  // ============================================================
+  // 基本設定
+  // ============================================================
 
-import crypto from "crypto";
-
-import {
-  registerSale,
-  cancelLatestSale,
-  buildReport,
-  buildRecordReport,
-} from "./sales.js";
-
-
-/* =========================================================
-   ENV
-========================================================= */
-
-const TELEGRAM_BOT_TOKEN =
-  process.env.TELEGRAM_BOT_TOKEN;
-
-const TELEGRAM_WEBHOOK_SECRET =
-  process.env.TELEGRAM_WEBHOOK_SECRET;
-
-const TELEGRAM_ALLOWED_CHAT_IDS =
-  process.env.TELEGRAM_ALLOWED_CHAT_IDS ||
-  "";
-
-const TELEGRAM_ALLOWED_USER_IDS =
-  process.env.TELEGRAM_ALLOWED_USER_IDS ||
-  "";
-
-
-/* =========================================================
-   IMAGE
-========================================================= */
-
-const PHOTO_URL =
-  "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/main/D261A432-2C27-4ADD-900E-E6BE35B57595.png";
-
-
-/* =========================================================
-   LIMIT
-========================================================= */
-
-const MAX_UPDATE_BYTES =
-  20000;
-
-const TEXT_LIMIT =
-  3500;
-
-const CAPTION_LIMIT =
-  900;
-
-
-/* =========================================================
-   ENV CHECK
-========================================================= */
-
-function requireEnvironment() {
-  if (
-    !TELEGRAM_BOT_TOKEN
-  ) {
-    throw new Error(
-      "TELEGRAM_BOT_TOKEN is missing."
-    );
+  if (req.method !== "POST") {
+    return res.status(200).send("OK");
   }
 
-  if (
-    !TELEGRAM_WEBHOOK_SECRET
-  ) {
-    throw new Error(
-      "TELEGRAM_WEBHOOK_SECRET is missing."
-    );
-  }
-}
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const redisUrl = process.env.KV_REST_API_URL;
+  const redisToken = process.env.KV_REST_API_TOKEN;
 
+  const message = req.body?.message;
 
-/* =========================================================
-   ALLOWLIST
-========================================================= */
-
-function parseIdList(
-  value
-) {
-  return new Set(
-    String(value)
-      .split(",")
-      .map(
-        value =>
-          value.trim()
-      )
-      .filter(
-        Boolean
-      )
-  );
-}
-
-
-const allowedChatIds =
-  parseIdList(
-    TELEGRAM_ALLOWED_CHAT_IDS
-  );
-
-
-const allowedUserIds =
-  parseIdList(
-    TELEGRAM_ALLOWED_USER_IDS
-  );
-
-
-function isAllowed(
-  message
-) {
-  const chatId =
-    String(
-      message.chat.id
-    );
-
-  const userId =
-    message.from &&
-    Number.isSafeInteger(
-      message.from.id
-    )
-      ? String(
-          message.from.id
-        )
-      : null;
-
-
-  if (
-    allowedChatIds.size > 0 &&
-    !allowedChatIds.has(
-      chatId
-    )
-  ) {
-    return false;
+  if (!token || !redisUrl || !redisToken || !message) {
+    return res.status(200).send("OK");
   }
 
+  const chatId = message.chat?.id;
 
-  if (
-    allowedUserIds.size > 0 &&
-    (
-      !userId ||
-      !allowedUserIds.has(
-        userId
-      )
-    )
-  ) {
-    return false;
+  if (!chatId) {
+    return res.status(200).send("OK");
   }
 
-  return true;
-}
+  const text = String(message.text || "").trim();
 
+  // ============================================================
+  // Redis
+  // ============================================================
 
-/* =========================================================
-   SECRET COMPARE
-========================================================= */
+  async function redis(command, ...args) {
+    const response = await fetch(redisUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${redisToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify([command, ...args])
+    });
 
-function secureEqual(
-  actual,
-  expected
-) {
-  if (
-    typeof actual !==
-      "string" ||
-    typeof expected !==
-      "string"
-  ) {
-    return false;
-  }
-
-  const a =
-    Buffer.from(
-      actual,
-      "utf8"
-    );
-
-  const b =
-    Buffer.from(
-      expected,
-      "utf8"
-    );
-
-  if (
-    a.length !==
-    b.length
-  ) {
-    return false;
-  }
-
-  return crypto.timingSafeEqual(
-    a,
-    b
-  );
-}
-
-
-function verifyWebhookSecret(
-  req
-) {
-  requireEnvironment();
-
-  const received =
-    req.headers[
-      "x-telegram-bot-api-secret-token"
-    ];
-
-  return secureEqual(
-    received,
-    TELEGRAM_WEBHOOK_SECRET
-  );
-}
-
-
-/* =========================================================
-   TELEGRAM API
-========================================================= */
-
-async function telegramRequest(
-  method,
-  payload
-) {
-  requireEnvironment();
-
-  const url =
-    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`;
-
-  const response =
-    await fetch(
-      url,
-      {
-        method:
-          "POST",
-
-        headers: {
-          "Content-Type":
-            "application/json",
-        },
-
-        body:
-          JSON.stringify(
-            payload
-          ),
-      }
-    );
-
-  const data =
-    await response.json();
-
-  if (
-    !response.ok ||
-    !data.ok
-  ) {
-    throw new Error(
-      `Telegram API error: ${response.status} ${JSON.stringify(data)}`
-    );
-  }
-
-  return data.result;
-}
-
-
-/* =========================================================
-   SEND MESSAGE
-========================================================= */
-
-async function sendMessage(
-  chatId,
-  text
-) {
-  if (
-    !text
-  ) {
-    return;
-  }
-
-  for (
-    let i = 0;
-    i < text.length;
-    i += TEXT_LIMIT
-  ) {
-    await telegramRequest(
-      "sendMessage",
-      {
-        chat_id:
-          chatId,
-
-        text:
-          text.slice(
-            i,
-            i +
-              TEXT_LIMIT
-          ),
-      }
-    );
-  }
-}
-
-
-/* =========================================================
-   SEND PHOTO
-========================================================= */
-
-async function sendPhoto(
-  chatId,
-  text
-) {
-  if (
-    text.length <=
-    CAPTION_LIMIT
-  ) {
-    await telegramRequest(
-      "sendPhoto",
-      {
-        chat_id:
-          chatId,
-
-        photo:
-          PHOTO_URL,
-
-        caption:
-          text,
-      }
-    );
-
-    return;
-  }
-
-  await telegramRequest(
-    "sendPhoto",
-    {
-      chat_id:
-        chatId,
-
-      photo:
-        PHOTO_URL,
+    if (!response.ok) {
+      throw new Error(`Redis HTTP error: ${response.status}`);
     }
-  );
 
-  await sendMessage(
+    const data = await response.json();
+
+    if (data.error) {
+      throw new Error(`Redis error: ${data.error}`);
+    }
+
+    return data.result;
+  }
+
+  // ============================================================
+  // 数値処理
+  // ============================================================
+
+  function safeNumber(value) {
+    const number = Number(value);
+
+    if (!Number.isFinite(number)) {
+      return 0;
+    }
+
+    return number;
+  }
+
+  // ============================================================
+  // 東京時間
+  // ============================================================
+
+  function getTokyoDateInfo(date = new Date()) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Tokyo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(date);
+
+    const values = {};
+
+    for (const part of parts) {
+      if (part.type !== "literal") {
+        values[part.type] = part.value;
+      }
+    }
+
+    const year = values.year;
+    const month = values.month;
+    const day = values.day;
+
+    return {
+      year,
+      month,
+      day,
+      dateKey: `${year}-${month}-${day}`,
+      monthKey: `${year}-${month}`,
+      yearKey: year
+    };
+  }
+
+  // ============================================================
+  // Redisキー
+  // ============================================================
+
+  function dailyKey(dateKey) {
+    return `moheji:delivery:daily:${dateKey}`;
+  }
+
+  function monthlyKey(monthKey) {
+    return `moheji:delivery:month:${monthKey}`;
+  }
+
+  function yearlyKey(yearKey) {
+    return `moheji:delivery:year:${yearKey}`;
+  }
+
+  function workingDaysKey(monthKey) {
+    return `moheji:delivery:workingdays:${monthKey}`;
+  }
+
+  const allTimeKey = "moheji:delivery:alltime";
+
+  // ============================================================
+  // 売上レコード用Redisキー
+  //
+  // 1件ごとの売上を保存する。
+  //
+  // これにより、
+  //
+  // 10/4 23:59
+  // /sales 17014 17
+  //
+  // 10/5 00:01
+  // /cancel
+  //
+  // のように日付をまたいでも、
+  // 元の10/4の集計を正しく戻せる。
+  // ============================================================
+
+  function recordsKey(chatId) {
+    return `moheji:delivery:records:${chatId}`;
+  }
+
+  function recordKey(chatId, recordId) {
+    return `moheji:delivery:record:${chatId}:${recordId}`;
+  }
+
+  // ============================================================
+  // レコードID
+  // ============================================================
+
+  function createRecordId() {
+    return `${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+  }
+
+  // ============================================================
+  // Redis Hash取得
+  //
+  // Upstashの返却形式が環境によって
+  // 配列 / オブジェクトになる場合に対応
+  // ============================================================
+
+  async function getHash(key) {
+    const result = await redis("HGETALL", key);
+
+    if (!result) {
+      return {};
+    }
+
+    if (Array.isArray(result)) {
+      const object = {};
+
+      for (let i = 0; i < result.length; i += 2) {
+        const field = result[i];
+        const value = result[i + 1];
+
+        if (field !== undefined) {
+          object[field] = value;
+        }
+      }
+
+      return object;
+    }
+
+    if (typeof result === "object") {
+      return result;
+    }
+
+    return {};
+  }
+
+  // ============================================================
+  // Telegram送信
+  // ============================================================
+
+  async function sendTelegram(chatId, messageText) {
+    const response = await fetch(
+      `https://api.telegram.org/bot${token}/sendMessage`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: messageText
+        })
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Telegram sendMessage error: ${response.status}`
+      );
+    }
+
+    return response;
+  }
+
+  // ============================================================
+  // 日別集計取得
+  // ============================================================
+
+  async function getDailyValues(dateKey) {
+    const data = await getHash(dailyKey(dateKey));
+
+    return {
+      sales: safeNumber(data.sales),
+      orders: safeNumber(data.orders)
+    };
+  }
+
+  // ============================================================
+  // 月別集計取得
+  // ============================================================
+
+  async function getMonthlyValues(monthKey) {
+    const data = await getHash(monthlyKey(monthKey));
+
+    return {
+      sales: safeNumber(data.sales),
+      orders: safeNumber(data.orders)
+    };
+  }
+
+  // ============================================================
+  // 年別集計取得
+  // ============================================================
+
+  async function getYearlyValues(yearKey) {
+    const data = await getHash(yearlyKey(yearKey));
+
+    return {
+      sales: safeNumber(data.sales),
+      orders: safeNumber(data.orders)
+    };
+  }
+
+  // ============================================================
+  // ここまで Part 1
+  // ============================================================
+  // ============================================================
+  // 集計値を加算・減算する
+  // ============================================================
+
+  async function changeHashValues(key, salesDelta, ordersDelta) {
+    await redis(
+      "HINCRBY",
+      key,
+      "sales",
+      salesDelta
+    );
+
+    await redis(
+      "HINCRBY",
+      key,
+      "orders",
+      ordersDelta
+    );
+  }
+
+  // ============================================================
+  // 全期間集計の取得
+  // ============================================================
+
+  async function getAllTimeValues() {
+    const data = await getHash(allTimeKey);
+
+    return {
+      sales: safeNumber(data.sales),
+      orders: safeNumber(data.orders)
+    };
+  }
+
+  // ============================================================
+  // 営業日を更新
+  //
+  // その日の売上が0より大きい場合 → 営業日として登録
+  // 売上が0になった場合 → 営業日から削除
+  // ============================================================
+
+  async function updateWorkingDay(dateKey, monthKey) {
+    const daily = await getDailyValues(dateKey);
+
+    const key = workingDaysKey(monthKey);
+
+    if (daily.sales > 0 || daily.orders > 0) {
+      await redis(
+        "SADD",
+        key,
+        dateKey
+      );
+    } else {
+      await redis(
+        "SREM",
+        key,
+        dateKey
+      );
+    }
+  }
+
+  // ============================================================
+  // 売上レコード保存
+  //
+  // 1件の /sales を丸ごと保存する。
+  //
+  // cancelled = 0
+  // のレコードだけが有効な売上。
+  // ============================================================
+
+  async function saveSalesRecord({
     chatId,
-    text
-  );
-}
-
-
-/* =========================================================
-   UPDATE VALIDATION
-========================================================= */
-
-function validateUpdate(
-  update
-) {
-  if (
-    !update ||
-    typeof update !==
-      "object"
-  ) {
-    throw new Error(
-      "Invalid Telegram update."
-    );
-  }
-
-  if (
-    !Number.isSafeInteger(
-      update.update_id
-    )
-  ) {
-    throw new Error(
-      "Invalid update_id."
-    );
-  }
-
-  const message =
-    update.message;
-
-  if (
-    !message
-  ) {
-    return null;
-  }
-
-  if (
-    !message.chat ||
-    !Number.isSafeInteger(
-      message.chat.id
-    )
-  ) {
-    throw new Error(
-      "Invalid chat."
-    );
-  }
-
-  if (
-    typeof message.text !==
-      "string"
-  ) {
-    return null;
-  }
-
-  if (
-    message.text.length >
-    4096
-  ) {
-    throw new Error(
-      "Message too long."
-    );
-  }
-
-  return message;
-}
-
-
-/* =========================================================
-   COMMAND
-========================================================= */
-
-function getCommand(
-  text
-) {
-  const match =
-    text.match(
-      /^\/([a-zA-Z0-9_]+)(?:@\w+)?(?:\s|$)/
-    );
-
-  if (!match) {
-    return null;
-  }
-
-  const command =
-    match[1].toLowerCase();
-
-  /*
-    コマンドは3つだけ。
-  */
-
-  if (
-    command === "sales" ||
-    command === "cancel" ||
-    command === "record"
-  ) {
-    return command;
-  }
-
-  return null;
-}
-
-
-/* =========================================================
-   SALES INPUT
-========================================================= */
-
-function parseSales(
-  text
-) {
-  const body =
-    text
-      .replace(
-        /^\/sales(?:@\w+)?/i,
-        ""
-      )
-      .trim();
-
-  const parts =
-    body.split(
-      /\s+/
-    );
-
-  if (
-    parts.length !== 2
-  ) {
-    throw new Error(
-      "入力形式：/sales 売上 件数"
-    );
-  }
-
-  const sales =
-    Number(
-      parts[0]
-    );
-
-  const orders =
-    Number(
-      parts[1]
-    );
-
-  if (
-    !Number.isSafeInteger(
-      sales
-    ) ||
-    !Number.isSafeInteger(
-      orders
-    )
-  ) {
-    throw new Error(
-      "売上と件数は整数で入力してください。"
-    );
-  }
-
-  if (
-    sales <= 0 ||
-    orders <= 0
-  ) {
-    throw new Error(
-      "売上と件数は1以上で入力してください。"
-    );
-  }
-
-  return {
     sales,
     orders,
-  };
-}
+    dateKey,
+    monthKey,
+    yearKey,
+    createdAt
+  }) {
+    const recordId = createRecordId();
 
+    const key = recordKey(chatId, recordId);
 
-/* =========================================================
-   OPERATION ID
-========================================================= */
-
-function createSaleOperationId(
-  updateId
-) {
-  return crypto
-    .createHash(
-      "sha256"
-    )
-    .update(
-      `telegram:sales:${updateId}`,
-      "utf8"
-    )
-    .digest(
-      "hex"
+    await redis(
+      "HSET",
+      key,
+      "id",
+      recordId,
+      "chatId",
+      String(chatId),
+      "sales",
+      String(sales),
+      "orders",
+      String(orders),
+      "dateKey",
+      dateKey,
+      "monthKey",
+      monthKey,
+      "yearKey",
+      yearKey,
+      "createdAt",
+      String(createdAt),
+      "cancelled",
+      "0"
     );
-}
 
-
-function createCancelOperationId(
-  updateId
-) {
-  return crypto
-    .createHash(
-      "sha256"
-    )
-    .update(
-      `telegram:cancel:${updateId}`,
-      "utf8"
-    )
-    .digest(
-      "hex"
+    // 最新のレコードを簡単に取得できるように
+    // 作成時刻をscoreとしてZSETへ保存
+    await redis(
+      "ZADD",
+      recordsKey(chatId),
+      createdAt,
+      recordId
     );
-}
 
-
-/* =========================================================
-   BODY SIZE
-========================================================= */
-
-function getBodySize(
-  body
-) {
-  return Buffer.byteLength(
-    JSON.stringify(
-      body || {}
-    ),
-    "utf8"
-  );
-}
-
-
-/* =========================================================
-   HANDLER
-========================================================= */
-
-export default async function handler(
-  req,
-  res
-) {
-  /*
-    GETはWebhook確認用。
-    コマンドではありません。
-  */
-
-  if (
-    req.method ===
-    "GET"
-  ) {
-    return res
-      .status(200)
-      .json({
-        ok:
-          true,
-      });
+    return {
+      id: recordId,
+      sales,
+      orders,
+      dateKey,
+      monthKey,
+      yearKey,
+      createdAt
+    };
   }
 
+  // ============================================================
+  // 最新の未キャンセル売上を探す
+  //
+  // ZSETを新しい順に取得し、
+  // cancelled=0 のものを最初に見つける。
+  //
+  // これにより
+  //
+  // /sales 100 1
+  // /sales 200 2
+  // /sales 300 3
+  //
+  // /cancel
+  //
+  // → 300 3
+  //
+  // /cancel
+  //
+  // → 200 2
+  //
+  // /cancel
+  //
+  // → 100 1
+  //
+  // の順番になる。
+  // ============================================================
 
-  if (
-    req.method !==
-    "POST"
-  ) {
-    return res
-      .status(405)
-      .json({
-        ok:
-          false,
+  async function findLatestActiveRecord(chatId) {
+    const ids = await redis(
+      "ZREVRANGE",
+      recordsKey(chatId),
+      "0",
+      "-1"
+    );
 
-        error:
-          "Method Not Allowed",
-      });
-  }
-
-
-  try {
-    /* -----------------------------------------------
-       Secret
-    ----------------------------------------------- */
-
-    if (
-      !verifyWebhookSecret(
-        req
-      )
-    ) {
-      return res
-        .status(401)
-        .json({
-          ok:
-            false,
-
-          error:
-            "Unauthorized",
-        });
+    if (!ids) {
+      return null;
     }
 
+    const recordIds = Array.isArray(ids)
+      ? ids
+      : [];
 
-    /* -----------------------------------------------
-       Body
-    ----------------------------------------------- */
-
-    if (
-      getBodySize(
-        req.body
-      ) >
-      MAX_UPDATE_BYTES
-    ) {
-      return res
-        .status(413)
-        .json({
-          ok:
-            false,
-
-          error:
-            "Payload too large",
-        });
-    }
-
-
-    /* -----------------------------------------------
-       Telegram update
-    ----------------------------------------------- */
-
-    const message =
-      validateUpdate(
-        req.body
+    for (const recordId of recordIds) {
+      const record = await getHash(
+        recordKey(chatId, recordId)
       );
 
-    if (!message) {
-      return res
-        .status(200)
-        .send("OK");
-    }
+      if (!record || !record.id) {
+        continue;
+      }
 
-
-    /* -----------------------------------------------
-       Allowlist
-    ----------------------------------------------- */
-
-    if (
-      !isAllowed(
-        message
-      )
-    ) {
-      return res
-        .status(200)
-        .send("OK");
-    }
-
-
-    const text =
-      message.text.trim();
-
-    const chatId =
-      message.chat.id;
-
-    const command =
-      getCommand(
-        text
+      const cancelled = String(
+        record.cancelled ?? "0"
       );
 
-
-    /*
-      3コマンド以外は完全に無視。
-    */
-
-    if (!command) {
-      return res
-        .status(200)
-        .send("OK");
-    }
-
-
-    /* =================================================
-       /sales
-    ================================================= */
-
-    if (
-      command ===
-      "sales"
-    ) {
-      try {
-        const {
-          sales,
-          orders,
-        } =
-          parseSales(
-            text
-          );
-
-        const operationId =
-          createSaleOperationId(
-            req.body.update_id
-          );
-
-        await registerSale({
-          chatId,
-          sales,
-          orders,
-          operationId,
-        });
-
-        const report =
-          await buildReport();
-
-        await sendPhoto(
-          chatId,
-          report
-        );
-
-        return res
-          .status(200)
-          .send("OK");
-      } catch (
-        error
-      ) {
-        console.error(
-          "SALES ERROR:",
-          error
-        );
-
-        try {
-          await sendMessage(
-            chatId,
-            `⚠️ ${error.message}`
-          );
-        } catch (
-          sendError
-        ) {
-          console.error(
-            "SALES SEND ERROR:",
-            sendError
-          );
-        }
-
-        return res
-          .status(200)
-          .send("OK");
+      if (cancelled === "1") {
+        continue;
       }
+
+      return {
+        id: record.id,
+        chatId: record.chatId,
+        sales: safeNumber(record.sales),
+        orders: safeNumber(record.orders),
+        dateKey: record.dateKey,
+        monthKey: record.monthKey,
+        yearKey: record.yearKey,
+        createdAt: safeNumber(record.createdAt),
+        cancelled: false
+      };
     }
 
+    return null;
+  }
 
-    /* =================================================
-       /cancel
-    ================================================= */
+  // ============================================================
+  // 売上登録
+  // ============================================================
 
-    if (
-      command ===
-      "cancel"
-    ) {
-      try {
-        const operationId =
-          createCancelOperationId(
-            req.body.update_id
-          );
+  async function processSales(chatId, sales, orders) {
+    const now = new Date();
 
-        await cancelLatestSale({
-          chatId,
-          operationId,
-        });
+    const {
+      dateKey,
+      monthKey,
+      yearKey
+    } = getTokyoDateInfo(now);
 
-        const report =
-          await buildReport();
+    // ----------------------------------------------------------
+    // 個別売上レコードを先に保存
+    // ----------------------------------------------------------
 
-        await sendPhoto(
-          chatId,
-          report
-        );
+    const record = await saveSalesRecord({
+      chatId,
+      sales,
+      orders,
+      dateKey,
+      monthKey,
+      yearKey,
+      createdAt: Date.now()
+    });
 
-        return res
-          .status(200)
-          .send("OK");
-      } catch (
-        error
-      ) {
-        console.error(
-          "CANCEL ERROR:",
-          error
-        );
+    // ----------------------------------------------------------
+    // 日別集計
+    // ----------------------------------------------------------
 
-        try {
-          await sendMessage(
-            chatId,
-            `⚠️ ${error.message}`
-          );
-        } catch (
-          sendError
-        ) {
-          console.error(
-            "CANCEL SEND ERROR:",
-            sendError
-          );
-        }
-
-        return res
-          .status(200)
-          .send("OK");
-      }
-    }
-
-
-    /* =================================================
-       /record
-    ================================================= */
-
-    if (
-      command ===
-      "record"
-    ) {
-      try {
-        const report =
-          await buildRecordReport();
-
-        await sendPhoto(
-          chatId,
-          report
-        );
-
-        return res
-          .status(200)
-          .send("OK");
-      } catch (
-        error
-      ) {
-        console.error(
-          "RECORD ERROR:",
-          error
-        );
-
-        try {
-          await sendMessage(
-            chatId,
-            `⚠️ ${error.message}`
-          );
-        } catch (
-          sendError
-        ) {
-          console.error(
-            "RECORD SEND ERROR:",
-            sendError
-          );
-        }
-
-        return res
-          .status(200)
-          .send("OK");
-      }
-    }
-
-
-    /*
-      ここには通常来ない。
-      コマンドは上の3つだけ。
-    */
-
-    return res
-      .status(200)
-      .send("OK");
-
-  } catch (
-    error
-  ) {
-    console.error(
-      "TELEGRAM WEBHOOK ERROR:",
-      error
+    await changeHashValues(
+      dailyKey(dateKey),
+      sales,
+      orders
     );
 
-    /*
-      TelegramへのWebhook応答は
-      200にして無限リトライを防止。
-    */
+    // ----------------------------------------------------------
+    // 月別集計
+    // ----------------------------------------------------------
 
-    return res
-      .status(200)
-      .send("OK");
+    await changeHashValues(
+      monthlyKey(monthKey),
+      sales,
+      orders
+    );
+
+    // ----------------------------------------------------------
+    // 年別集計
+    // ----------------------------------------------------------
+
+    await changeHashValues(
+      yearlyKey(yearKey),
+      sales,
+      orders
+    );
+
+    // ----------------------------------------------------------
+    // 全期間集計
+    // ----------------------------------------------------------
+
+    await changeHashValues(
+      allTimeKey,
+      sales,
+      orders
+    );
+
+    // ----------------------------------------------------------
+    // 営業日登録
+    // ----------------------------------------------------------
+
+    await updateWorkingDay(
+      dateKey,
+      monthKey
+    );
+
+    // ----------------------------------------------------------
+    // Telegram表示
+    // ----------------------------------------------------------
+
+    const circles = " ".repeat(
+      Math.floor(sales / 500)
+    );
+
+    const dateText = new Intl.DateTimeFormat(
+      "ja-JP",
+      {
+        timeZone: "Asia/Tokyo",
+        year: "numeric",
+        month: "numeric",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit"
+      }
+    ).format(now);
+
+    const messageText =
+` 配達売上！
+
+ ${sales.toLocaleString()}円
+${circles}
+ ${orders}件
+ ${dateText}
+
+お疲れ様でした。`;
+
+    await sendTelegram(
+      chatId,
+      messageText
+    );
+
+    return record;
   }
+
+  // ============================================================
+  // キャンセル処理
+  //
+  // /cancel は金額・件数を受け取らない。
+  //
+  // 最新の未キャンセルレコードを取得し、
+  // そのレコードに保存されている
+  //
+  // dateKey
+  // monthKey
+  // yearKey
+  //
+  // を使って元の日付の集計を戻す。
+  //
+  // これが「日付またぎキャンセル」に対応する重要部分。
+  // ============================================================
+
+  async function processCancel(chatId) {
+    const record = await findLatestActiveRecord(
+      chatId
+    );
+
+    // ----------------------------------------------------------
+    // キャンセル対象がない場合
+    // ----------------------------------------------------------
+
+    if (!record) {
+      await sendTelegram(
+        chatId,
+        "キャンセルできる売上がありません。"
+      );
+
+      return null;
+    }
+
+    // ----------------------------------------------------------
+    // レコードに保存されている元の日付を使用
+    // ----------------------------------------------------------
+
+    const dateKey = record.dateKey;
+    const monthKey = record.monthKey;
+    const yearKey = record.yearKey;
+
+    const sales = record.sales;
+    const orders = record.orders;
+
+    // ----------------------------------------------------------
+    // 元の日付の日別集計から減算
+    // ----------------------------------------------------------
+
+    await changeHashValues(
+      dailyKey(dateKey),
+      -sales,
+      -orders
+    );
+
+    // ----------------------------------------------------------
+    // 元の月の月別集計から減算
+    // ----------------------------------------------------------
+
+    await changeHashValues(
+      monthlyKey(monthKey),
+      -sales,
+      -orders
+    );
+
+    // ----------------------------------------------------------
+    // 元の年の年別集計から減算
+    // ----------------------------------------------------------
+
+    await changeHashValues(
+      yearlyKey(yearKey),
+      -sales,
+      -orders
+    );
+
+    // ----------------------------------------------------------
+    // 全期間集計から減算
+    // ----------------------------------------------------------
+
+    await changeHashValues(
+      allTimeKey,
+      -sales,
+      -orders
+    );
+
+    // ----------------------------------------------------------
+    // 営業日を再判定
+    //
+    // 例えば10/4の売上を全部キャンセルして0になった場合、
+    // 10/4を営業日から外す。
+    // ----------------------------------------------------------
+
+    await updateWorkingDay(
+      dateKey,
+      monthKey
+    );
+
+    // ----------------------------------------------------------
+    // 二重キャンセル防止
+    // cancelled = 1 にする
+    // ----------------------------------------------------------
+
+    await redis(
+      "HSET",
+      recordKey(chatId, record.id),
+      "cancelled",
+      "1"
+    );
+
+    // ----------------------------------------------------------
+    // キャンセル完了メッセージ
+    // ----------------------------------------------------------
+
+    const messageText =
+` 売上をキャンセルしました。
+
+ ${sales.toLocaleString()}円
+ ${orders}件
+
+対象日：${dateKey}`;
+
+    await sendTelegram(
+      chatId,
+      messageText
+    );
+
+    return record;
+  }
+
+  // ============================================================
+  // ここまで Part 2
+  // ============================================================
+  // ============================================================
+  // 月間最高売上を取得
+  //
+  // 月内の営業日数で割った
+  // 「1営業日あたり平均売上」を比較する。
+  //
+  // キャンセル後は日別集計が更新されているため、
+  // ここでも正しい値が反映される。
+  // ============================================================
+
+  async function getMonthlyBest(monthKey) {
+    const workingDays = await redis(
+      "SMEMBERS",
+      workingDaysKey(monthKey)
+    );
+
+    if (!Array.isArray(workingDays) || workingDays.length === 0) {
+      return {
+        sales: 0,
+        orders: 0,
+        dateKey: null,
+        workingDays: 0
+      };
+    }
+
+    let best = {
+      sales: 0,
+      orders: 0,
+      dateKey: null,
+      workingDays: workingDays.length
+    };
+
+    for (const dateKey of workingDays) {
+      const daily = await getDailyValues(dateKey);
+
+      if (daily.sales > best.sales) {
+        best = {
+          sales: daily.sales,
+          orders: daily.orders,
+          dateKey,
+          workingDays: workingDays.length
+        };
+      }
+    }
+
+    return best;
+  }
+
+  // ============================================================
+  // 月間レコード表示
+  //
+  // 直近24か月を表示する。
+  // ============================================================
+
+  async function processRecord(chatId) {
+    const now = new Date();
+
+    const {
+      year,
+      month
+    } = getTokyoDateInfo(now);
+
+    const currentYear = Number(year);
+    const currentMonth = Number(month);
+
+    const lines = [];
+
+    lines.push(" 配達売上記録");
+    lines.push("");
+
+    // ----------------------------------------------------------
+    // 直近24か月
+    // ----------------------------------------------------------
+
+    for (let i = 0; i < 24; i++) {
+      let targetYear = currentYear;
+      let targetMonth = currentMonth - i;
+
+      while (targetMonth <= 0) {
+        targetMonth += 12;
+        targetYear -= 1;
+      }
+
+      const monthKey =
+        `${targetYear}-${String(targetMonth).padStart(2, "0")}`;
+
+      const monthly = await getMonthlyValues(
+        monthKey
+      );
+
+      const workingDays = await redis(
+        "SMEMBERS",
+        workingDaysKey(monthKey)
+      );
+
+      const workingDayCount =
+        Array.isArray(workingDays)
+          ? workingDays.length
+          : 0;
+
+      const average =
+        workingDayCount > 0
+          ? monthly.sales / workingDayCount
+          : 0;
+
+      const best =
+        await getMonthlyBest(monthKey);
+
+      lines.push(
+        `${targetYear}/${targetMonth}`
+      );
+
+      lines.push(
+        `売上：${monthly.sales.toLocaleString()}円`
+      );
+
+      lines.push(
+        `件数：${monthly.orders.toLocaleString()}件`
+      );
+
+      lines.push(
+        `営業日：${workingDayCount}日`
+      );
+
+      lines.push(
+        `1日平均：${Math.round(
+          average
+        ).toLocaleString()}円`
+      );
+
+      if (best.dateKey) {
+        lines.push(
+          `最高日：${best.dateKey.replaceAll(
+            "-",
+            "/"
+          )} ${best.sales.toLocaleString()}円`
+        );
+      } else {
+        lines.push(
+          "最高日：-"
+        );
+      }
+
+      lines.push("");
+    }
+
+    // ----------------------------------------------------------
+    // 年間・全期間集計
+    // ----------------------------------------------------------
+
+    const yearly =
+      await getYearlyValues(String(currentYear));
+
+    const allTime =
+      await getAllTimeValues();
+
+    lines.push(
+      `【${currentYear}年】`
+    );
+
+    lines.push(
+      `年間売上：${yearly.sales.toLocaleString()}円`
+    );
+
+    lines.push(
+      `年間件数：${yearly.orders.toLocaleString()}件`
+    );
+
+    lines.push("");
+
+    lines.push(
+      "【全期間】"
+    );
+
+    lines.push(
+      `総売上：${allTime.sales.toLocaleString()}円`
+    );
+
+    lines.push(
+      `総件数：${allTime.orders.toLocaleString()}件`
+    );
+
+    await sendTelegram(
+      chatId,
+      lines.join("\n")
+    );
+  }
+
+  // ============================================================
+  // コマンド解析
+  // ============================================================
+
+  // ------------------------------------------------------------
+  // /record
+  // ------------------------------------------------------------
+
+  if (/^\/record(?:@\w+)?$/.test(text)) {
+    try {
+      await processRecord(chatId);
+      return res.status(200).send("OK");
+    } catch (error) {
+      console.error(
+        "record error:",
+        error
+      );
+
+      await sendTelegram(
+        chatId,
+        "記録の取得中にエラーが発生しました。"
+      );
+
+      return res.status(200).send("OK");
+    }
+  }
+
+  // ------------------------------------------------------------
+  // /cancel
+  //
+  // 引数は禁止。
+  //
+  // OK:
+  // /cancel
+  //
+  // NG:
+  // /cancel 100 1
+  // ------------------------------------------------------------
+
+  if (/^\/cancel(?:@\w+)?$/.test(text)) {
+    try {
+      await processCancel(chatId);
+      return res.status(200).send("OK");
+    } catch (error) {
+      console.error(
+        "cancel error:",
+        error
+      );
+
+      await sendTelegram(
+        chatId,
+        "キャンセル処理中にエラーが発生しました。"
+      );
+
+      return res.status(200).send("OK");
+    }
+  }
+
+  // ------------------------------------------------------------
+  // /sales 売上 件数
+  //
+  // 例:
+  //
+  // /sales 17014 17
+  // ------------------------------------------------------------
+
+  const salesMatch =
+    text.match(
+      /^\/sales(?:@\w+)?\s+(\d+)\s+(\d+)$/
+    );
+
+  if (salesMatch) {
+    const sales = Number(
+      salesMatch[1]
+    );
+
+    const orders = Number(
+      salesMatch[2]
+    );
+
+    // ----------------------------------------------------------
+    // 不正値防止
+    // ----------------------------------------------------------
+
+    if (
+      !Number.isSafeInteger(sales) ||
+      !Number.isSafeInteger(orders) ||
+      sales < 0 ||
+      orders < 0
+    ) {
+      await sendTelegram(
+        chatId,
+        "売上または件数が正しくありません。"
+      );
+
+      return res.status(200).send("OK");
+    }
+
+    try {
+      await processSales(
+        chatId,
+        sales,
+        orders
+      );
+
+      return res.status(200).send("OK");
+    } catch (error) {
+      console.error(
+        "sales error:",
+        error
+      );
+
+      await sendTelegram(
+        chatId,
+        "売上登録中にエラーが発生しました。"
+      );
+
+      return res.status(200).send("OK");
+    }
+  }
+
+  // ============================================================
+  // 対応していないメッセージ
+  // ============================================================
+
+  return res.status(200).send("OK");
 }
