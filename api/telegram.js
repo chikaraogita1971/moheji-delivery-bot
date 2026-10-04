@@ -1,1191 +1,1482 @@
-const PHOTO_URL =
-  "https://raw.githubusercontent.com/chikaraogita1971/moheji-delivery-bot/refs/heads/main/D261A432-2C27-4ADD-900E-E6BE35B57595.png";
+// api/telegram.js
 
-module.exports = async function handler(req, res) {
-  const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-  const KV_REST_API_URL = process.env.KV_REST_API_URL;
-  const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const KV_REST_API_URL = process.env.KV_REST_API_URL;
+const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN;
 
-  if (!BOT_TOKEN || !KV_REST_API_URL || !KV_REST_API_TOKEN) {
-    return res.status(500).json({
-      ok: false,
-      error: "Environment variables are not configured",
-    });
+// GitHub等の画像URLではなく、Telegramから直接参照できる画像URLを使用
+const PHOTO_URL = process.env.PHOTO_URL || "";
+
+// ============================================================
+// Redis REST API
+// ============================================================
+
+async function redisCommand(command) {
+  if (!KV_REST_API_URL || !KV_REST_API_TOKEN) {
+    throw new Error("Redis environment variables are missing.");
   }
 
-  // =========================================================
-  // Redis
-  // =========================================================
+  const response = await fetch(KV_REST_API_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${KV_REST_API_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(command),
+  });
 
-  async function redisCommand(command) {
-    const response = await fetch(KV_REST_API_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${KV_REST_API_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(command),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Redis HTTP ${response.status}: ${text}`);
-    }
-
-    const data = await response.json();
-
-    if (data && data.error) {
-      throw new Error(`Redis error: ${data.error}`);
-    }
-
-    return data.result;
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(
+      `Redis request failed: ${response.status} ${text}`
+    );
   }
 
-  // =========================================================
-  // Telegram
-  // =========================================================
+  const data = await response.json();
 
-  async function sendTelegramMessage(chatId, message) {
-    const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: message,
-      }),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Telegram sendMessage failed: ${text}`);
-    }
-
-    return response.json();
+  if (data.error) {
+    throw new Error(`Redis error: ${data.error}`);
   }
 
-  async function sendTelegramPhoto(chatId, caption) {
-    const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`;
+  return data;
+}
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        photo: PHOTO_URL,
-        caption,
-      }),
-    });
+// ============================================================
+// Telegram API
+// ============================================================
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Telegram sendPhoto failed: ${text}`);
-    }
-
-    return response.json();
+async function telegramRequest(method, payload) {
+  if (!TELEGRAM_BOT_TOKEN) {
+    throw new Error("TELEGRAM_BOT_TOKEN is missing.");
   }
 
-  // =========================================================
-  // Utility
-  // =========================================================
+  const url =
+    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`;
 
-  function safeNumber(value) {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : 0;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok || !data.ok) {
+    throw new Error(
+      `Telegram API error: ${response.status} ${JSON.stringify(data)}`
+    );
   }
 
-  function createRecordId() {
-    return `${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2, 10)}`;
+  return data;
+}
+
+async function sendTelegramMessage(chatId, text) {
+  return telegramRequest("sendMessage", {
+    chat_id: chatId,
+    text,
+  });
+}
+
+async function sendTelegramPhoto(chatId, caption) {
+  if (!PHOTO_URL) {
+    return sendTelegramMessage(chatId, caption);
   }
 
-  function getTokyoDateInfo(date = new Date()) {
-    const parts = new Intl.DateTimeFormat("ja-JP", {
-      timeZone: "Asia/Tokyo",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-      hourCycle: "h23",
-    }).formatToParts(date);
+  return telegramRequest("sendPhoto", {
+    chat_id: chatId,
+    photo: PHOTO_URL,
+    caption,
+  });
+}
 
-    const map = {};
+// ============================================================
+// 東京時間
+// ============================================================
 
-    for (const part of parts) {
-      if (part.type !== "literal") {
-        map[part.type] = part.value;
-      }
-    }
+function getTokyoDateInfo(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 
-    const year = Number(map.year);
-    const month = Number(map.month);
-    const day = Number(map.day);
-    const hour = Number(map.hour);
-    const minute = Number(map.minute);
+  const parts = formatter.formatToParts(date);
+  const values = {};
 
-    const dateKey =
-      `${year}-${String(month).padStart(2, "0")}-` +
-      `${String(day).padStart(2, "0")}`;
-
-    const monthKey =
-      `${year}-${String(month).padStart(2, "0")}`;
-
-    const yearKey = String(year);
-
-    const displayDate =
-      `${year}/${String(month).padStart(2, "0")}/` +
-      `${String(day).padStart(2, "0")}`;
-
-    return {
-      year,
-      month,
-      day,
-      hour,
-      minute,
-      dateKey,
-      monthKey,
-      yearKey,
-      displayDate,
-    };
-  }
-
-  // =========================================================
-  // Redis Keys
-  // =========================================================
-
-  function getDailyKey(dateKey) {
-    return `moheji:delivery:daily:${dateKey}`;
-  }
-
-  function getMonthlyKey(monthKey) {
-    return `moheji:delivery:month:${monthKey}`;
-  }
-
-  function getYearlyKey(yearKey) {
-    return `moheji:delivery:year:${yearKey}`;
-  }
-
-  function getWorkingDaysKey(monthKey) {
-    return `moheji:delivery:workingdays:${monthKey}`;
-  }
-
-  function getAllTimeKey() {
-    return `moheji:delivery:alltime`;
-  }
-
-  function getRecordIndexKey(chatId) {
-    return `moheji:delivery:records:${chatId}`;
-  }
-
-  function getRecordKey(chatId, recordId) {
-    return `moheji:delivery:record:${chatId}:${recordId}`;
-  }
-
-  function getCancelLockKey(chatId, recordId) {
-    return `moheji:delivery:cancel-lock:${chatId}:${recordId}`;
-  }
-
-  function getMigrationLockKey(chatId) {
-    return `moheji:delivery:migration-lock:${chatId}:2026-10-04`;
-  }
-
-  function getMigrationFlagKey(chatId) {
-    return `moheji:delivery:migration:${chatId}:2026-10-04`;
-  }
-
-  // =========================================================
-  // Aggregate Values
-  // =========================================================
-
-  async function getDailyValues(dateKey) {
-    const key = getDailyKey(dateKey);
-
-    const result = await redisCommand([
-      "HGETALL",
-      key,
-    ]);
-
-    const values = {};
-
-    if (Array.isArray(result)) {
-      for (let i = 0; i < result.length; i += 2) {
-        values[result[i]] = result[i + 1];
-      }
-    }
-
-    return {
-      sales: safeNumber(values.sales),
-      orders: safeNumber(values.orders),
-    };
-  }
-
-  async function getMonthlyValues(monthKey) {
-    const key = getMonthlyKey(monthKey);
-
-    const result = await redisCommand([
-      "HGETALL",
-      key,
-    ]);
-
-    const values = {};
-
-    if (Array.isArray(result)) {
-      for (let i = 0; i < result.length; i += 2) {
-        values[result[i]] = result[i + 1];
-      }
-    }
-
-    return {
-      sales: safeNumber(values.sales),
-      orders: safeNumber(values.orders),
-    };
-  }
-
-  async function getYearlyValues(yearKey) {
-    const key = getYearlyKey(yearKey);
-
-    const result = await redisCommand([
-      "HGETALL",
-      key,
-    ]);
-
-    const values = {};
-
-    if (Array.isArray(result)) {
-      for (let i = 0; i < result.length; i += 2) {
-        values[result[i]] = result[i + 1];
-      }
-    }
-
-    return {
-      sales: safeNumber(values.sales),
-      orders: safeNumber(values.orders),
-    };
-  }
-
-  async function getAllTimeValues() {
-    const key = getAllTimeKey();
-
-    const result = await redisCommand([
-      "HGETALL",
-      key,
-    ]);
-
-    const values = {};
-
-    if (Array.isArray(result)) {
-      for (let i = 0; i < result.length; i += 2) {
-        values[result[i]] = result[i + 1];
-      }
-    }
-
-    return {
-      sales: safeNumber(values.sales),
-      orders: safeNumber(values.orders),
-    };
-  }
-
-  // =========================================================
-  // Working Days
-  // =========================================================
-
-  async function updateWorkingDay(dateKey) {
-    const monthKey = dateKey.slice(0, 7);
-    const workingDaysKey = getWorkingDaysKey(monthKey);
-
-    const daily = await getDailyValues(dateKey);
-
-    if (daily.sales > 0 || daily.orders > 0) {
-      await redisCommand([
-        "SADD",
-        workingDaysKey,
-        dateKey,
-      ]);
-    } else {
-      await redisCommand([
-        "SREM",
-        workingDaysKey,
-        dateKey,
-      ]);
+  for (const part of parts) {
+    if (part.type !== "literal") {
+      values[part.type] = part.value;
     }
   }
 
-  // =========================================================
-  // Monthly Best
-  // =========================================================
+  const year = Number(values.year);
+  const month = Number(values.month);
+  const day = Number(values.day);
 
-  async function getMonthlyBest(monthKey) {
-    const workingDaysKey = getWorkingDaysKey(monthKey);
+  const dateKey =
+    `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 
-    const workingDays =
-      (await redisCommand([
-        "SMEMBERS",
-        workingDaysKey,
-      ])) || [];
+  const monthKey =
+    `${year}-${String(month).padStart(2, "0")}`;
 
-    let maxDailySales = 0;
-    let maxDailyOrders = 0;
+  const yearKey = String(year);
 
-    for (const dateKey of workingDays) {
-      const daily = await getDailyValues(dateKey);
+  return {
+    year,
+    month,
+    day,
+    dateKey,
+    monthKey,
+    yearKey,
+    hour: Number(values.hour),
+    minute: Number(values.minute),
+  };
+}
 
-      if (daily.sales > maxDailySales) {
-        maxDailySales = daily.sales;
-      }
+// ============================================================
+// 数値処理
+// ============================================================
 
-      if (daily.orders > maxDailyOrders) {
-        maxDailyOrders = daily.orders;
-      }
-    }
+function safeNumber(value) {
+  const number = Number(value);
 
-    return {
-      workingDayCount: workingDays.length,
-      maxDailySales,
-      maxDailyOrders,
-    };
-  }
+  return Number.isFinite(number) ? number : 0;
+}
 
-  // =========================================================
-  // Sales Record
-  // =========================================================
+function normalizeInteger(value) {
+  const number = Number(value);
 
-  async function saveSalesRecord({
-    chatId,
-    sales,
-    orders,
-    dateInfo,
-  }) {
-    const recordId = createRecordId();
-
-    const recordKey = getRecordKey(chatId, recordId);
-    const recordIndexKey = getRecordIndexKey(chatId);
-
-    await redisCommand([
-      "HSET",
-      recordKey,
-      "id",
-      recordId,
-      "chatId",
-      String(chatId),
-      "sales",
-      String(sales),
-      "orders",
-      String(orders),
-      "dateKey",
-      dateInfo.dateKey,
-      "monthKey",
-      dateInfo.monthKey,
-      "yearKey",
-      dateInfo.yearKey,
-      "createdAt",
-      new Date().toISOString(),
-      "cancelled",
-      "0",
-    ]);
-
-    await redisCommand([
-      "ZADD",
-      recordIndexKey,
-      String(Date.now()),
-      recordId,
-    ]);
-
-    return recordId;
-  }
-
-  // =========================================================
-  // Latest Active Record
-  // =========================================================
-
-  async function findLatestActiveRecord(chatId) {
-    const recordIndexKey = getRecordIndexKey(chatId);
-
-    // 最新100件ではなく、全件を新しい順に確認する
-    const recordIds =
-      (await redisCommand([
-        "ZREVRANGE",
-        recordIndexKey,
-        "0",
-        "-1",
-      ])) || [];
-
-    for (const recordId of recordIds) {
-      const recordKey = getRecordKey(chatId, recordId);
-
-      const result = await redisCommand([
-        "HGETALL",
-        recordKey,
-      ]);
-
-      if (!Array.isArray(result) || result.length === 0) {
-        continue;
-      }
-
-      const record = {};
-
-      for (let i = 0; i < result.length; i += 2) {
-        record[result[i]] = result[i + 1];
-      }
-
-      if (record.cancelled === "1") {
-        continue;
-      }
-
-      return {
-        ...record,
-        id: record.id || recordId,
-        sales: safeNumber(record.sales),
-        orders: safeNumber(record.orders),
-      };
-    }
-
+  if (!Number.isFinite(number)) {
     return null;
   }
 
-  // =========================================================
-  // End of Part 1
-  // =========================================================
-    // =========================================================
-  // Process Sales
-  // =========================================================
+  return Math.floor(number);
+}
 
-  async function processSales(chatId, sales, orders) {
-    const dateInfo = getTokyoDateInfo();
+// ============================================================
+// Redis Key
+// ============================================================
 
-    // 先に個別レコードを保存
-    const recordId = await saveSalesRecord({
-      chatId,
-      sales,
-      orders,
-      dateInfo,
-    });
+function dailyKey(dateKey) {
+  return `moheji:delivery:daily:${dateKey}`;
+}
 
-    // -------------------------
-    // Daily
-    // -------------------------
+function monthlyKey(monthKey) {
+  return `moheji:delivery:month:${monthKey}`;
+}
 
+function yearlyKey(yearKey) {
+  return `moheji:delivery:year:${yearKey}`;
+}
+
+function workingDaysKey(monthKey) {
+  return `moheji:delivery:workingdays:${monthKey}`;
+}
+
+function allTimeKey() {
+  return "moheji:delivery:alltime";
+}
+
+function chatRecordsKey(chatId) {
+  return `moheji:delivery:records:${chatId}`;
+}
+
+function recordKey(chatId, recordId) {
+  return `moheji:delivery:record:${chatId}:${recordId}`;
+}
+
+function cancelLockKey(chatId) {
+  return `moheji:delivery:cancel-lock:${chatId}`;
+}
+
+// ============================================================
+// Record ID
+// ============================================================
+
+function createRecordId() {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+
+  return [
+    Date.now(),
+    Math.random().toString(36).slice(2),
+    Math.random().toString(36).slice(2),
+  ].join("-");
+}
+
+// ============================================================
+// 日次取得
+// ============================================================
+
+async function getDaily(dateKey) {
+  const result = await redisCommand([
+    "HGETALL",
+    dailyKey(dateKey),
+  ]);
+
+  const data = result.result || {};
+
+  return {
+    sales: safeNumber(data.sales),
+    orders: safeNumber(data.orders),
+  };
+}
+
+// ============================================================
+// 月次取得
+// ============================================================
+
+async function getMonthly(monthKey) {
+  const result = await redisCommand([
+    "HGETALL",
+    monthlyKey(monthKey),
+  ]);
+
+  const data = result.result || {};
+
+  return {
+    sales: safeNumber(data.sales),
+    orders: safeNumber(data.orders),
+  };
+}
+
+// ============================================================
+// 年次取得
+// ============================================================
+
+async function getYearly(yearKey) {
+  const result = await redisCommand([
+    "HGETALL",
+    yearlyKey(yearKey),
+  ]);
+
+  const data = result.result || {};
+
+  return {
+    sales: safeNumber(data.sales),
+    orders: safeNumber(data.orders),
+  };
+}
+
+// ============================================================
+// 累計取得
+// ============================================================
+
+async function getAllTime() {
+  const result = await redisCommand([
+    "HGETALL",
+    allTimeKey(),
+  ]);
+
+  const data = result.result || {};
+
+  return {
+    sales: safeNumber(data.sales),
+    orders: safeNumber(data.orders),
+  };
+}
+
+// ============================================================
+// 稼働日更新
+// ============================================================
+
+async function updateWorkingDay(dateKey, monthKey) {
+  const daily = await getDaily(dateKey);
+
+  const key = workingDaysKey(monthKey);
+
+  if (daily.sales > 0 || daily.orders > 0) {
     await redisCommand([
-      "HINCRBY",
-      getDailyKey(dateInfo.dateKey),
-      "sales",
-      String(sales),
+      "SADD",
+      key,
+      dateKey,
     ]);
-
+  } else {
     await redisCommand([
-      "HINCRBY",
-      getDailyKey(dateInfo.dateKey),
-      "orders",
-      String(orders),
+      "SREM",
+      key,
+      dateKey,
     ]);
+  }
+}
 
-    // -------------------------
-    // Monthly
-    // -------------------------
+// ============================================================
+// 稼働日数
+// ============================================================
 
-    await redisCommand([
-      "HINCRBY",
-      getMonthlyKey(dateInfo.monthKey),
-      "sales",
-      String(sales),
-    ]);
+async function getWorkingDayCount(monthKey) {
+  const result = await redisCommand([
+    "SCARD",
+    workingDaysKey(monthKey),
+  ]);
 
-    await redisCommand([
-      "HINCRBY",
-      getMonthlyKey(dateInfo.monthKey),
-      "orders",
-      String(orders),
-    ]);
+  return safeNumber(result.result);
+}
 
-    // -------------------------
-    // Yearly
-    // -------------------------
+// ============================================================
+// 月間最高記録
+// ============================================================
 
-    await redisCommand([
-      "HINCRBY",
-      getYearlyKey(dateInfo.yearKey),
-      "sales",
-      String(sales),
-    ]);
+async function getMonthlyBest(monthKey) {
+  const result = await redisCommand([
+    "SMEMBERS",
+    workingDaysKey(monthKey),
+  ]);
 
-    await redisCommand([
-      "HINCRBY",
-      getYearlyKey(dateInfo.yearKey),
-      "orders",
-      String(orders),
-    ]);
+  const dates = result.result || [];
 
-    // -------------------------
-    // All Time
-    // -------------------------
+  let bestSales = 0;
+  let bestOrders = 0;
 
-    await redisCommand([
-      "HINCRBY",
-      getAllTimeKey(),
-      "sales",
-      String(sales),
-    ]);
+  for (const dateKey of dates) {
+    const daily = await getDaily(dateKey);
 
-    await redisCommand([
-      "HINCRBY",
-      getAllTimeKey(),
-      "orders",
-      String(orders),
-    ]);
+    if (daily.sales > bestSales) {
+      bestSales = daily.sales;
+    }
 
-    // -------------------------
-    // Working Day
-    // -------------------------
+    if (daily.orders > bestOrders) {
+      bestOrders = daily.orders;
+    }
+  }
 
-    await updateWorkingDay(dateInfo.dateKey);
+  return {
+    sales: bestSales,
+    orders: bestOrders,
+  };
+}
 
+// ============================================================
+// レコード保存
+// ============================================================
+
+async function saveRecord({
+  chatId,
+  recordId,
+  dateKey,
+  monthKey,
+  yearKey,
+  sales,
+  orders,
+}) {
+  const key = recordKey(chatId, recordId);
+
+  await redisCommand([
+    "HSET",
+    key,
+    "recordId",
+    recordId,
+    "chatId",
+    String(chatId),
+    "dateKey",
+    dateKey,
+    "monthKey",
+    monthKey,
+    "yearKey",
+    yearKey,
+    "sales",
+    String(sales),
+    "orders",
+    String(orders),
+    "status",
+    "active",
+    "createdAt",
+    new Date().toISOString(),
+  ]);
+
+  await redisCommand([
+    "ZADD",
+    chatRecordsKey(chatId),
+    Date.now(),
+    recordId,
+  ]);
+}
+
+// ============================================================
+// レコード取得
+// ============================================================
+
+async function getRecord(chatId, recordId) {
+  const result = await redisCommand([
+    "HGETALL",
+    recordKey(chatId, recordId),
+  ]);
+
+  const data = result.result || {};
+
+  if (!data.recordId) {
+    return null;
+  }
+
+  return data;
+}
+
+// ============================================================
+// 最新有効レコード
+// ============================================================
+
+async function getLatestActiveRecord(chatId) {
+  const result = await redisCommand([
+    "ZREVRANGE",
+    chatRecordsKey(chatId),
+    "0",
+    "-1",
+  ]);
+
+  const recordIds = result.result || [];
+
+  for (const recordId of recordIds) {
+    const record = await getRecord(chatId, recordId);
+
+    if (record && record.status === "active") {
+      return record;
+    }
+  }
+
+  return null;
+}
+
+// ============================================================
+// レコード取消済み
+// ============================================================
+
+async function markRecordCancelled(chatId, recordId) {
+  await redisCommand([
+    "HSET",
+    recordKey(chatId, recordId),
+    "status",
+    "cancelled",
+    "cancelledAt",
+    new Date().toISOString(),
+  ]);
+}
+
+// ============================================================
+// Part 1 END
+// ============================================================
+// ============================================================
+// 売上登録
+// ============================================================
+
+async function processSales({
+  chatId,
+  sales,
+  orders,
+}) {
+  const dateInfo = getTokyoDateInfo();
+
+  const {
+    dateKey,
+    monthKey,
+    yearKey,
+  } = dateInfo;
+
+  const recordId = createRecordId();
+
+  // ----------------------------------------------------------
+  // レコード保存
+  // ----------------------------------------------------------
+
+  await saveRecord({
+    chatId,
+    recordId,
+    dateKey,
+    monthKey,
+    yearKey,
+    sales,
+    orders,
+  });
+
+  // ----------------------------------------------------------
+  // 日次
+  // ----------------------------------------------------------
+
+  await redisCommand([
+    "HINCRBY",
+    dailyKey(dateKey),
+    "sales",
+    sales,
+  ]);
+
+  await redisCommand([
+    "HINCRBY",
+    dailyKey(dateKey),
+    "orders",
+    orders,
+  ]);
+
+  // ----------------------------------------------------------
+  // 月次
+  // ----------------------------------------------------------
+
+  await redisCommand([
+    "HINCRBY",
+    monthlyKey(monthKey),
+    "sales",
+    sales,
+  ]);
+
+  await redisCommand([
+    "HINCRBY",
+    monthlyKey(monthKey),
+    "orders",
+    orders,
+  ]);
+
+  // ----------------------------------------------------------
+  // 年次
+  // ----------------------------------------------------------
+
+  await redisCommand([
+    "HINCRBY",
+    yearlyKey(yearKey),
+    "sales",
+    sales,
+  ]);
+
+  await redisCommand([
+    "HINCRBY",
+    yearlyKey(yearKey),
+    "orders",
+    orders,
+  ]);
+
+  // ----------------------------------------------------------
+  // 累計
+  // ----------------------------------------------------------
+
+  await redisCommand([
+    "HINCRBY",
+    allTimeKey(),
+    "sales",
+    sales,
+  ]);
+
+  await redisCommand([
+    "HINCRBY",
+    allTimeKey(),
+    "orders",
+    orders,
+  ]);
+
+  // ----------------------------------------------------------
+  // 稼働日
+  // ----------------------------------------------------------
+
+  await updateWorkingDay(
+    dateKey,
+    monthKey
+  );
+
+  return {
+    recordId,
+    dateKey,
+    monthKey,
+    yearKey,
+    sales,
+    orders,
+  };
+}
+
+// ============================================================
+// 取消ロック
+// ============================================================
+
+async function acquireCancelLock(chatId) {
+  const result = await redisCommand([
+    "SET",
+    cancelLockKey(chatId),
+    String(Date.now()),
+    "NX",
+    "EX",
+    "60",
+  ]);
+
+  return result.result === "OK";
+}
+
+async function releaseCancelLock(chatId) {
+  await redisCommand([
+    "DEL",
+    cancelLockKey(chatId),
+  ]);
+}
+
+// ============================================================
+// 旧データ移行設定
+// ============================================================
+
+// 2026-10-04に旧システムで登録されていたデータ
+const LEGACY_DATE = "2026-10-04";
+const LEGACY_SALES = 17014;
+const LEGACY_ORDERS = 17;
+
+const LEGACY_MIGRATION_FLAG =
+  `moheji:delivery:legacy-migration:${LEGACY_DATE}`;
+
+const LEGACY_MIGRATION_LOCK =
+  `moheji:delivery:legacy-migration-lock:${LEGACY_DATE}`;
+
+// ============================================================
+// 旧データ取消
+// ============================================================
+
+async function processLegacyCancel(chatId) {
+  // ----------------------------------------------------------
+  // すでに移行済みなら何もしない
+  // ----------------------------------------------------------
+
+  const flagResult = await redisCommand([
+    "EXISTS",
+    LEGACY_MIGRATION_FLAG,
+  ]);
+
+  if (safeNumber(flagResult.result) === 1) {
     return {
-      recordId,
-      dateInfo,
+      success: false,
+      reason: "already_migrated",
     };
   }
 
-  // =========================================================
-  // Process Cancel
-  // =========================================================
-
-  async function processCancel(chatId) {
-    // -------------------------------------------------------
-    // まず、新システムの個別レコードを探す
-    // -------------------------------------------------------
-
-    const record = await findLatestActiveRecord(chatId);
-
-    if (record) {
-      const recordId = record.id;
-      const recordKey = getRecordKey(chatId, recordId);
-      const cancelLockKey = getCancelLockKey(chatId, recordId);
-
-      // 二重キャンセル防止
-      const lockResult = await redisCommand([
-        "SET",
-        cancelLockKey,
-        "1",
-        "NX",
-        "EX",
-        "60",
-      ]);
-
-      if (lockResult !== "OK") {
-        return {
-          ok: false,
-          message:
-            "⚠️ この売上は現在キャンセル処理中です。",
-        };
-      }
-
-      try {
-        // ロック取得後、もう一度状態を確認
-        const latestResult = await redisCommand([
-          "HGETALL",
-          recordKey,
-        ]);
-
-        const latest = {};
-
-        if (Array.isArray(latestResult)) {
-          for (let i = 0; i < latestResult.length; i += 2) {
-            latest[latestResult[i]] = latestResult[i + 1];
-          }
-        }
-
-        if (!latest.id || latest.cancelled === "1") {
-          return {
-            ok: false,
-            message:
-              "⚠️ キャンセル対象の売上が見つかりません。",
-          };
-        }
-
-        const sales = safeNumber(latest.sales);
-        const orders = safeNumber(latest.orders);
-        const dateKey = latest.dateKey;
-        const monthKey = latest.monthKey;
-        const yearKey = latest.yearKey;
-
-        // ---------------------------------------------------
-        // 現在の集計値を確認
-        // ---------------------------------------------------
-
-        const daily = await getDailyValues(dateKey);
-        const monthly = await getMonthlyValues(monthKey);
-        const yearly = await getYearlyValues(yearKey);
-
-        if (
-          daily.sales < sales ||
-          daily.orders < orders ||
-          monthly.sales < sales ||
-          monthly.orders < orders ||
-          yearly.sales < sales ||
-          yearly.orders < orders
-        ) {
-          return {
-            ok: false,
-            message:
-              "⚠️ 集計データと売上記録が一致しないため、キャンセルを中止しました。",
-          };
-        }
-
-        // ---------------------------------------------------
-        // Dailyから減算
-        // ---------------------------------------------------
-
-        await redisCommand([
-          "HINCRBY",
-          getDailyKey(dateKey),
-          "sales",
-          String(-sales),
-        ]);
-
-        await redisCommand([
-          "HINCRBY",
-          getDailyKey(dateKey),
-          "orders",
-          String(-orders),
-        ]);
-
-        // ---------------------------------------------------
-        // Monthlyから減算
-        // ---------------------------------------------------
-
-        await redisCommand([
-          "HINCRBY",
-          getMonthlyKey(monthKey),
-          "sales",
-          String(-sales),
-        ]);
-
-        await redisCommand([
-          "HINCRBY",
-          getMonthlyKey(monthKey),
-          "orders",
-          String(-orders),
-        ]);
-
-        // ---------------------------------------------------
-        // Yearlyから減算
-        // ---------------------------------------------------
-
-        await redisCommand([
-          "HINCRBY",
-          getYearlyKey(yearKey),
-          "sales",
-          String(-sales),
-        ]);
-
-        await redisCommand([
-          "HINCRBY",
-          getYearlyKey(yearKey),
-          "orders",
-          String(-orders),
-        ]);
-
-        // ---------------------------------------------------
-        // All Timeから減算
-        //
-        // salesフィールドが存在しない旧データにも対応。
-        // ordersは必ず減算。
-        // ---------------------------------------------------
-
-        const allTimeKey = getAllTimeKey();
-
-        const allTimeSalesExists =
-          await redisCommand([
-            "HEXISTS",
-            allTimeKey,
-            "sales",
-          ]);
-
-        if (safeNumber(allTimeSalesExists) === 1) {
-          await redisCommand([
-            "HINCRBY",
-            allTimeKey,
-            "sales",
-            String(-sales),
-          ]);
-        }
-
-        await redisCommand([
-          "HINCRBY",
-          allTimeKey,
-          "orders",
-          String(-orders),
-        ]);
-
-        // ---------------------------------------------------
-        // Working Dayを再計算
-        // ---------------------------------------------------
-
-        await updateWorkingDay(dateKey);
-
-        // ---------------------------------------------------
-        // 個別レコードをキャンセル済みにする
-        // ---------------------------------------------------
-
-        await redisCommand([
-          "HSET",
-          recordKey,
-          "cancelled",
-          "1",
-          "cancelledAt",
-          new Date().toISOString(),
-        ]);
-
-        return {
-          ok: true,
-          type: "record",
-          sales,
-          orders,
-          dateKey,
-          recordId,
-        };
-      } finally {
-        await redisCommand([
-          "DEL",
-          cancelLockKey,
-        ]);
-      }
-    }
-
-    // =======================================================
-    // 新システムのレコードがない場合
-    //
-    // 旧システムで
-    // 2026-10-04 23:59
-    // /sales 17014 17
-    //
-    // が登録されていたケースへの一回限りの救済処理
-    // =======================================================
-
-    const migrationLockKey =
-      getMigrationLockKey(chatId);
-
-    const migrationFlagKey =
-      getMigrationFlagKey(chatId);
-
-    // -------------------------------------------------------
-    // 二重実行防止
-    // -------------------------------------------------------
-
-    const migrationLockResult =
-      await redisCommand([
-        "SET",
-        migrationLockKey,
-        "1",
-        "NX",
-        "EX",
-        "60",
-      ]);
-
-    if (migrationLockResult !== "OK") {
-      return {
-        ok: false,
-        message:
-          "⚠️ この過去売上は現在キャンセル処理中です。",
-      };
-    }
-
-    try {
-      // -----------------------------------------------------
-      // すでに移行キャンセル済みか確認
-      // -----------------------------------------------------
-
-      const alreadyMigrated =
-        await redisCommand([
-          "GET",
-          migrationFlagKey,
-        ]);
-
-      if (alreadyMigrated) {
-        return {
-          ok: false,
-          message:
-            "⚠️ この過去売上はすでにキャンセル済みです。",
-        };
-      }
-
-      // -----------------------------------------------------
-      // 旧売上の固定値
-      // -----------------------------------------------------
-
-      const legacySales = 17014;
-      const legacyOrders = 17;
-
-      const legacyDateKey = "2026-10-04";
-      const legacyMonthKey = "2026-10";
-      const legacyYearKey = "2026";
-
-      // -----------------------------------------------------
-      // 10/4の集計を確認
-      //
-      // 旧システムには個別レコードがないため、
-      // 少なくともこの金額・件数が存在する場合だけ
-      // 一度限りで減算する。
-      // -----------------------------------------------------
-
-      const daily =
-        await getDailyValues(legacyDateKey);
-
-      const monthly =
-        await getMonthlyValues(legacyMonthKey);
-
-      const yearly =
-        await getYearlyValues(legacyYearKey);
-
-      if (
-        daily.sales < legacySales ||
-        daily.orders < legacyOrders ||
-        monthly.sales < legacySales ||
-        monthly.orders < legacyOrders ||
-        yearly.sales < legacySales ||
-        yearly.orders < legacyOrders
-      ) {
-        return {
-          ok: false,
-          message:
-            "⚠️ 2026/10/04の旧売上データが確認できないため、キャンセルを中止しました。",
-        };
-      }
-
-      // -----------------------------------------------------
-      // Daily
-      // -----------------------------------------------------
-
-      await redisCommand([
-        "HINCRBY",
-        getDailyKey(legacyDateKey),
-        "sales",
-        String(-legacySales),
-      ]);
-
-      await redisCommand([
-        "HINCRBY",
-        getDailyKey(legacyDateKey),
-        "orders",
-        String(-legacyOrders),
-      ]);
-
-      // -----------------------------------------------------
-      // Monthly
-      // -----------------------------------------------------
-
-      await redisCommand([
-        "HINCRBY",
-        getMonthlyKey(legacyMonthKey),
-        "sales",
-        String(-legacySales),
-      ]);
-
-      await redisCommand([
-        "HINCRBY",
-        getMonthlyKey(legacyMonthKey),
-        "orders",
-        String(-legacyOrders),
-      ]);
-
-      // -----------------------------------------------------
-      // Yearly
-      // -----------------------------------------------------
-
-      await redisCommand([
-        "HINCRBY",
-        getYearlyKey(legacyYearKey),
-        "sales",
-        String(-legacySales),
-      ]);
-
-      await redisCommand([
-        "HINCRBY",
-        getYearlyKey(legacyYearKey),
-        "orders",
-        String(-legacyOrders),
-      ]);
-
-      // -----------------------------------------------------
-      // All Time
-      // -----------------------------------------------------
-
-      const allTimeKey = getAllTimeKey();
-
-      const allTimeSalesExists =
-        await redisCommand([
-          "HEXISTS",
-          allTimeKey,
-          "sales",
-        ]);
-
-      if (safeNumber(allTimeSalesExists) === 1) {
-        await redisCommand([
-          "HINCRBY",
-          allTimeKey,
-          "sales",
-          String(-legacySales),
-        ]);
-      }
-
-      await redisCommand([
-        "HINCRBY",
-        allTimeKey,
-        "orders",
-        String(-legacyOrders),
-      ]);
-
-      // -----------------------------------------------------
-      // Working Day
-      // -----------------------------------------------------
-
-      await updateWorkingDay(legacyDateKey);
-
-      // -----------------------------------------------------
-      // 一年間の移行済みフラグ
-      // -----------------------------------------------------
-
-      await redisCommand([
-        "SET",
-        migrationFlagKey,
-        "1",
-        "EX",
-        "31536000",
-      ]);
-
-      return {
-        ok: true,
-        type: "legacy",
-        sales: legacySales,
-        orders: legacyOrders,
-        dateKey: legacyDateKey,
-      };
-    } finally {
-      await redisCommand([
-        "DEL",
-        migrationLockKey,
-      ]);
-    }
+  // ----------------------------------------------------------
+  // 二重取消防止ロック
+  // ----------------------------------------------------------
+
+  const lockResult = await redisCommand([
+    "SET",
+    LEGACY_MIGRATION_LOCK,
+    String(chatId),
+    "NX",
+    "EX",
+    "60",
+  ]);
+
+  if (lockResult.result !== "OK") {
+    return {
+      success: false,
+      reason: "locked",
+    };
   }
-
-  // =========================================================
-  // End of Part 2
-  // =========================================================
-    // =========================================================
-  // Report
-  // =========================================================
-
-  async function buildReport() {
-    const today = getTokyoDateInfo();
-
-    const daily = await getDailyValues(today.dateKey);
-    const monthly = await getMonthlyValues(today.monthKey);
-    const yearly = await getYearlyValues(today.yearKey);
-    const allTime = await getAllTimeValues();
-
-    const monthlyBest = await getMonthlyBest(
-      today.monthKey
-    );
-
-    const workingDayCount =
-      monthlyBest.workingDayCount;
-
-    const monthlyAverageSales =
-      workingDayCount > 0
-        ? monthly.sales / workingDayCount
-        : 0;
-
-    const monthlyAverageOrders =
-      workingDayCount > 0
-        ? monthly.orders / workingDayCount
-        : 0;
-
-    const monthlyTarget = 500000;
-
-    const achievementRate =
-      monthlyTarget > 0
-        ? (monthly.sales / monthlyTarget) * 100
-        : 0;
-
-    const monthlyRemaining =
-      Math.max(monthlyTarget - monthly.sales, 0);
-
-    const perOrder =
-      monthly.orders > 0
-        ? monthly.sales / monthly.orders
-        : 0;
-
-    const greenCircles =
-      Math.floor(monthly.sales / 100000);
-
-    const greenCircleText =
-      greenCircles > 0
-        ? "🟢".repeat(Math.min(greenCircles, 10))
-        : "なし";
-
-    const todaySales =
-      daily.sales.toLocaleString("ja-JP");
-
-    const todayOrders =
-      daily.orders.toLocaleString("ja-JP");
-
-    const monthSales =
-      monthly.sales.toLocaleString("ja-JP");
-
-    const monthOrders =
-      monthly.orders.toLocaleString("ja-JP");
-
-    const yearSales =
-      yearly.sales.toLocaleString("ja-JP");
-
-    const yearOrders =
-      yearly.orders.toLocaleString("ja-JP");
-
-    const allTimeSales =
-      allTime.sales.toLocaleString("ja-JP");
-
-    const allTimeOrders =
-      allTime.orders.toLocaleString("ja-JP");
-
-    const bestDailySales =
-      monthlyBest.maxDailySales.toLocaleString("ja-JP");
-
-    const bestDailyOrders =
-      monthlyBest.maxDailyOrders.toLocaleString("ja-JP");
-
-    const averageSalesText =
-      Math.round(monthlyAverageSales)
-        .toLocaleString("ja-JP");
-
-    const averageOrdersText =
-      Math.round(monthlyAverageOrders)
-        .toLocaleString("ja-JP");
-
-    const perOrderText =
-      Math.round(perOrder)
-        .toLocaleString("ja-JP");
-
-    const achievementText =
-      achievementRate.toFixed(1);
-
-    const remainingText =
-      monthlyRemaining.toLocaleString("ja-JP");
-
-    return [
-      "📊 もへじ配送売上レポート",
-      "",
-      `📅 ${today.displayDate}`,
-      "",
-      "【本日】",
-      `売上：¥${todaySales}`,
-      `件数：${todayOrders}件`,
-      "",
-      "【今月】",
-      `売上：¥${monthSales}`,
-      `件数：${monthOrders}件`,
-      `稼働日：${workingDayCount}日`,
-      `1日平均売上：¥${averageSalesText}`,
-      `1日平均件数：${averageOrdersText}件`,
-      `平均客単価：¥${perOrderText}`,
-      "",
-      "【今月の最高】",
-      `最高日商：¥${bestDailySales}`,
-      `最高日件数：${bestDailyOrders}件`,
-      "",
-      "【月間目標】",
-      `目標：¥${monthlyTarget.toLocaleString("ja-JP")}`,
-      `達成率：${achievementText}%`,
-      `残り：¥${remainingText}`,
-      "",
-      "【今年】",
-      `売上：¥${yearSales}`,
-      `件数：${yearOrders}件`,
-      "",
-      "【累計】",
-      `売上：¥${allTimeSales}`,
-      `件数：${allTimeOrders}件`,
-      "",
-      "【10万円達成】",
-      greenCircleText,
-    ].join("\n");
-  }
-
-  // =========================================================
-  // /record
-  // =========================================================
-
-  async function processRecord() {
-    const today = getTokyoDateInfo();
-
-    const lines = [];
-
-    lines.push("📈 過去24ヶ月 売上記録");
-    lines.push("");
-
-    for (let i = 0; i < 24; i++) {
-      const date = new Date(
-        Date.UTC(
-          today.year,
-          today.month - 1 - i,
-          1
-        )
-      );
-
-      const year = date.getUTCFullYear();
-      const month = date.getUTCMonth() + 1;
-
-      const monthKey =
-        `${year}-${String(month).padStart(2, "0")}`;
-
-      const monthly =
-        await getMonthlyValues(monthKey);
-
-      const best =
-        await getMonthlyBest(monthKey);
-
-      // workingdaysはRedis Setなので、
-      // GETではなくbest.workingDayCountを使う
-      const workingDayCount =
-        best.workingDayCount;
-
-      lines.push(
-        `${monthKey}`,
-        `売上：¥${monthly.sales.toLocaleString("ja-JP")}`,
-        `件数：${monthly.orders.toLocaleString("ja-JP")}件`,
-        `稼働日：${workingDayCount}日`,
-        `最高日商：¥${best.maxDailySales.toLocaleString("ja-JP")}`,
-        `最高日件数：${best.maxDailyOrders.toLocaleString("ja-JP")}件`,
-        ""
-      );
-    }
-
-    return lines.join("\n");
-  }
-
-  // =========================================================
-  // Parse Telegram Update
-  // =========================================================
-
-  function getMessageFromUpdate(update) {
-    if (!update || !update.message) {
-      return null;
-    }
-
-    return update.message;
-  }
-
-  // =========================================================
-  // Main Handler
-  // =========================================================
 
   try {
+    // --------------------------------------------------------
+    // ロック取得後に再確認
+    // --------------------------------------------------------
+
+    const flagCheck = await redisCommand([
+      "EXISTS",
+      LEGACY_MIGRATION_FLAG,
+    ]);
+
+    if (safeNumber(flagCheck.result) === 1) {
+      return {
+        success: false,
+        reason: "already_migrated",
+      };
+    }
+
+    // --------------------------------------------------------
+    // 旧データが本当に存在するか確認
+    // --------------------------------------------------------
+
+    const daily = await getDaily(LEGACY_DATE);
+
+    if (
+      daily.sales < LEGACY_SALES ||
+      daily.orders < LEGACY_ORDERS
+    ) {
+      return {
+        success: false,
+        reason: "legacy_data_not_found",
+      };
+    }
+
+    const legacyMonthKey = LEGACY_DATE.slice(0, 7);
+    const legacyYearKey = LEGACY_DATE.slice(0, 4);
+
+    const monthly = await getMonthly(
+      legacyMonthKey
+    );
+
+    const yearly = await getYearly(
+      legacyYearKey
+    );
+
+    const allTime = await getAllTime();
+
+    if (
+      monthly.sales < LEGACY_SALES ||
+      monthly.orders < LEGACY_ORDERS ||
+      yearly.sales < LEGACY_SALES ||
+      yearly.orders < LEGACY_ORDERS ||
+      allTime.sales < LEGACY_SALES ||
+      allTime.orders < LEGACY_ORDERS
+    ) {
+      return {
+        success: false,
+        reason: "aggregate_data_insufficient",
+      };
+    }
+
+    // --------------------------------------------------------
+    // 日次から減算
+    // --------------------------------------------------------
+
+    await redisCommand([
+      "HINCRBY",
+      dailyKey(LEGACY_DATE),
+      "sales",
+      -LEGACY_SALES,
+    ]);
+
+    await redisCommand([
+      "HINCRBY",
+      dailyKey(LEGACY_DATE),
+      "orders",
+      -LEGACY_ORDERS,
+    ]);
+
+    // --------------------------------------------------------
+    // 月次から減算
+    // --------------------------------------------------------
+
+    await redisCommand([
+      "HINCRBY",
+      monthlyKey(legacyMonthKey),
+      "sales",
+      -LEGACY_SALES,
+    ]);
+
+    await redisCommand([
+      "HINCRBY",
+      monthlyKey(legacyMonthKey),
+      "orders",
+      -LEGACY_ORDERS,
+    ]);
+
+    // --------------------------------------------------------
+    // 年次から減算
+    // --------------------------------------------------------
+
+    await redisCommand([
+      "HINCRBY",
+      yearlyKey(legacyYearKey),
+      "sales",
+      -LEGACY_SALES,
+    ]);
+
+    await redisCommand([
+      "HINCRBY",
+      yearlyKey(legacyYearKey),
+      "orders",
+      -LEGACY_ORDERS,
+    ]);
+
+    // --------------------------------------------------------
+    // 累計から減算
+    // --------------------------------------------------------
+
+    await redisCommand([
+      "HINCRBY",
+      allTimeKey(),
+      "sales",
+      -LEGACY_SALES,
+    ]);
+
+    await redisCommand([
+      "HINCRBY",
+      allTimeKey(),
+      "orders",
+      -LEGACY_ORDERS,
+    ]);
+
+    // --------------------------------------------------------
+    // 稼働日を再計算
+    // --------------------------------------------------------
+
+    await updateWorkingDay(
+      LEGACY_DATE,
+      legacyMonthKey
+    );
+
+    // --------------------------------------------------------
+    // 移行済みフラグ
+    // --------------------------------------------------------
+
+    await redisCommand([
+      "SET",
+      LEGACY_MIGRATION_FLAG,
+      JSON.stringify({
+        chatId: String(chatId),
+        date: LEGACY_DATE,
+        sales: LEGACY_SALES,
+        orders: LEGACY_ORDERS,
+        cancelledAt: new Date().toISOString(),
+      }),
+      "EX",
+      "31536000",
+    ]);
+
+    return {
+      success: true,
+      sales: LEGACY_SALES,
+      orders: LEGACY_ORDERS,
+      dateKey: LEGACY_DATE,
+      legacy: true,
+    };
+  } finally {
+    await redisCommand([
+      "DEL",
+      LEGACY_MIGRATION_LOCK,
+    ]);
+  }
+}
+
+// ============================================================
+// 通常の取消
+// ============================================================
+
+async function processCancel(chatId) {
+  const locked = await acquireCancelLock(chatId);
+
+  if (!locked) {
+    return {
+      success: false,
+      reason: "locked",
+    };
+  }
+
+  try {
+    // --------------------------------------------------------
+    // 最新の有効レコードを取得
+    // --------------------------------------------------------
+
+    let record = await getLatestActiveRecord(chatId);
+
+    // --------------------------------------------------------
+    // 通常レコードがない場合
+    // 旧17,014円データの取消を試す
+    // --------------------------------------------------------
+
+    if (!record) {
+      return await processLegacyCancel(chatId);
+    }
+
+    // --------------------------------------------------------
+    // レコードを再確認
+    // --------------------------------------------------------
+
+    record = await getRecord(
+      chatId,
+      record.recordId
+    );
+
+    if (
+      !record ||
+      record.status !== "active"
+    ) {
+      return {
+        success: false,
+        reason: "already_cancelled",
+      };
+    }
+
+    const sales = normalizeInteger(record.sales);
+    const orders = normalizeInteger(record.orders);
+
+    if (
+      sales === null ||
+      orders === null
+    ) {
+      throw new Error(
+        "Invalid record data."
+      );
+    }
+
+    const dateKey = record.dateKey;
+    const monthKey = record.monthKey;
+    const yearKey = record.yearKey;
+
+    // --------------------------------------------------------
+    // 現在の集計値を確認
+    // --------------------------------------------------------
+
+    const daily = await getDaily(dateKey);
+    const monthly = await getMonthly(monthKey);
+    const yearly = await getYearly(yearKey);
+    const allTime = await getAllTime();
+
+    if (
+      daily.sales < sales ||
+      daily.orders < orders
+    ) {
+      throw new Error(
+        "Daily aggregate is smaller than cancellation amount."
+      );
+    }
+
+    if (
+      monthly.sales < sales ||
+      monthly.orders < orders
+    ) {
+      throw new Error(
+        "Monthly aggregate is smaller than cancellation amount."
+      );
+    }
+
+    if (
+      yearly.sales < sales ||
+      yearly.orders < orders
+    ) {
+      throw new Error(
+        "Yearly aggregate is smaller than cancellation amount."
+      );
+    }
+
+    if (
+      allTime.sales < sales ||
+      allTime.orders < orders
+    ) {
+      throw new Error(
+        "All-time aggregate is smaller than cancellation amount."
+      );
+    }
+
+    // --------------------------------------------------------
+    // 日次から減算
+    // --------------------------------------------------------
+
+    await redisCommand([
+      "HINCRBY",
+      dailyKey(dateKey),
+      "sales",
+      -sales,
+    ]);
+
+    await redisCommand([
+      "HINCRBY",
+      dailyKey(dateKey),
+      "orders",
+      -orders,
+    ]);
+
+    // --------------------------------------------------------
+    // 月次から減算
+    // --------------------------------------------------------
+
+    await redisCommand([
+      "HINCRBY",
+      monthlyKey(monthKey),
+      "sales",
+      -sales,
+    ]);
+
+    await redisCommand([
+      "HINCRBY",
+      monthlyKey(monthKey),
+      "orders",
+      -orders,
+    ]);
+
+    // --------------------------------------------------------
+    // 年次から減算
+    // --------------------------------------------------------
+
+    await redisCommand([
+      "HINCRBY",
+      yearlyKey(yearKey),
+      "sales",
+      -sales,
+    ]);
+
+    await redisCommand([
+      "HINCRBY",
+      yearlyKey(yearKey),
+      "orders",
+      -orders,
+    ]);
+
+    // --------------------------------------------------------
+    // 累計から減算
+    // --------------------------------------------------------
+
+    await redisCommand([
+      "HINCRBY",
+      allTimeKey(),
+      "sales",
+      -sales,
+    ]);
+
+    await redisCommand([
+      "HINCRBY",
+      allTimeKey(),
+      "orders",
+      -orders,
+    ]);
+
+    // --------------------------------------------------------
+    // 稼働日更新
+    // --------------------------------------------------------
+
+    await updateWorkingDay(
+      dateKey,
+      monthKey
+    );
+
+    // --------------------------------------------------------
+    // レコードを取消済みにする
+    // --------------------------------------------------------
+
+    await markRecordCancelled(
+      chatId,
+      record.recordId
+    );
+
+    return {
+      success: true,
+      sales,
+      orders,
+      dateKey,
+      monthKey,
+      yearKey,
+      recordId: record.recordId,
+      legacy: false,
+    };
+  } finally {
+    await releaseCancelLock(chatId);
+  }
+}
+
+// ============================================================
+// Part 2 END
+// ============================================================
+// ============================================================
+// レポート用フォーマット
+// ============================================================
+
+function formatYen(value) {
+  return `¥${Math.floor(safeNumber(value)).toLocaleString("ja-JP")}`;
+}
+
+function formatNumber(value) {
+  return Math.floor(safeNumber(value)).toLocaleString("ja-JP");
+}
+
+function formatPercent(value) {
+  return `${safeNumber(value).toFixed(1)}%`;
+}
+
+// ============================================================
+// 月名
+// ============================================================
+
+function getMonthLabel(monthKey) {
+  const [year, month] = monthKey.split("-");
+
+  return `${year}年${Number(month)}月`;
+}
+
+// ============================================================
+// 月次レポート
+// ============================================================
+
+async function buildReport() {
+  const dateInfo = getTokyoDateInfo();
+
+  const {
+    dateKey,
+    monthKey,
+    yearKey,
+  } = dateInfo;
+
+  // ----------------------------------------------------------
+  // 各集計取得
+  // ----------------------------------------------------------
+
+  const [
+    today,
+    monthly,
+    yearly,
+    allTime,
+    workingDays,
+    best,
+  ] = await Promise.all([
+    getDaily(dateKey),
+    getMonthly(monthKey),
+    getYearly(yearKey),
+    getAllTime(),
+    getWorkingDayCount(monthKey),
+    getMonthlyBest(monthKey),
+  ]);
+
+  // ----------------------------------------------------------
+  // 月平均
+  // ----------------------------------------------------------
+
+  const averageSales =
+    workingDays > 0
+      ? monthly.sales / workingDays
+      : 0;
+
+  const averageOrders =
+    workingDays > 0
+      ? monthly.orders / workingDays
+      : 0;
+
+  // ----------------------------------------------------------
+  // 客単価
+  // ----------------------------------------------------------
+
+  const averageOrderValue =
+    monthly.orders > 0
+      ? monthly.sales / monthly.orders
+      : 0;
+
+  // ----------------------------------------------------------
+  // 月間目標
+  // ----------------------------------------------------------
+
+  const achievementRate =
+    MONTHLY_TARGET > 0
+      ? (monthly.sales / MONTHLY_TARGET) * 100
+      : 0;
+
+  const remaining =
+    Math.max(
+      0,
+      MONTHLY_TARGET - monthly.sales
+    );
+
+  // ----------------------------------------------------------
+  // 10万円ごとの丸
+  // ----------------------------------------------------------
+
+  const circleCount = Math.min(
+    10,
+    Math.floor(
+      monthly.sales / 100000
+    )
+  );
+
+  const circles =
+    "🟢".repeat(circleCount) +
+    "⚪".repeat(10 - circleCount);
+
+  // ----------------------------------------------------------
+  // レポート
+  // ----------------------------------------------------------
+
+  return [
+    "📊 モヘジ宅配 売上レポート",
+    "",
+    `📅 ${dateKey}`,
+    "",
+    "【本日】",
+    `売上：${formatYen(today.sales)}`,
+    `件数：${formatNumber(today.orders)}件`,
+    "",
+    `【${getMonthLabel(monthKey)}】`,
+    `売上：${formatYen(monthly.sales)}`,
+    `件数：${formatNumber(monthly.orders)}件`,
+    `稼働日：${formatNumber(workingDays)}日`,
+    `1日平均：${formatYen(averageSales)}`,
+    `1日平均件数：${formatNumber(averageOrders)}件`,
+    `平均客単価：${formatYen(averageOrderValue)}`,
+    "",
+    `目標：${formatYen(MONTHLY_TARGET)}`,
+    `達成率：${formatPercent(achievementRate)}`,
+    `残り：${formatYen(remaining)}`,
+    "",
+    `進捗：${circles}`,
+    "",
+    "【今月最高】",
+    `最高売上：${formatYen(best.sales)}`,
+    `最高件数：${formatNumber(best.orders)}件`,
+    "",
+    `【${yearKey}年】`,
+    `売上：${formatYen(yearly.sales)}`,
+    `件数：${formatNumber(yearly.orders)}件`,
+    "",
+    "【累計】",
+    `売上：${formatYen(allTime.sales)}`,
+    `件数：${formatNumber(allTime.orders)}件`,
+  ].join("\n");
+}
+
+// ============================================================
+// 過去24か月レポート
+// ============================================================
+
+async function processRecord() {
+  const current = getTokyoDateInfo();
+
+  const results = [];
+
+  let year = current.year;
+  let month = current.month;
+
+  for (let i = 0; i < 24; i++) {
+    const monthKey =
+      `${year}-${String(month).padStart(2, "0")}`;
+
+    const [
+      monthly,
+      workingDays,
+      best,
+    ] = await Promise.all([
+      getMonthly(monthKey),
+      getWorkingDayCount(monthKey),
+      getMonthlyBest(monthKey),
+    ]);
+
+    results.push({
+      monthKey,
+      monthly,
+      workingDays,
+      best,
+    });
+
+    month--;
+
+    if (month === 0) {
+      month = 12;
+      year--;
+    }
+  }
+
+  const lines = [
+    "📈 モヘジ宅配 過去24か月",
+    "",
+  ];
+
+  for (const item of results) {
+    const average =
+      item.workingDays > 0
+        ? item.monthly.sales / item.workingDays
+        : 0;
+
+    lines.push(
+      `【${getMonthLabel(item.monthKey)}】`,
+      `売上：${formatYen(item.monthly.sales)}`,
+      `件数：${formatNumber(item.monthly.orders)}件`,
+      `稼働日：${formatNumber(item.workingDays)}日`,
+      `1日平均：${formatYen(average)}`,
+      `最高売上：${formatYen(item.best.sales)}`,
+      `最高件数：${formatNumber(item.best.orders)}件`,
+      ""
+    );
+  }
+
+  return lines.join("\n");
+}
+
+// ============================================================
+// Telegram Update の重複チェック
+// ============================================================
+
+async function isUpdateProcessed(updateId) {
+  if (
+    updateId === undefined ||
+    updateId === null
+  ) {
+    return false;
+  }
+
+  const key =
+    `moheji:delivery:update:${updateId}`;
+
+  const result = await redisCommand([
+    "EXISTS",
+    key,
+  ]);
+
+  return safeNumber(result.result) === 1;
+}
+
+// ============================================================
+// Telegram Update を処理済みにする
+// ============================================================
+
+async function markUpdateProcessed(updateId) {
+  if (
+    updateId === undefined ||
+    updateId === null
+  ) {
+    return;
+  }
+
+  const key =
+    `moheji:delivery:update:${updateId}`;
+
+  await redisCommand([
+    "SET",
+    key,
+    "1",
+    "EX",
+    "86400",
+  ]);
+}
+
+// ============================================================
+// コマンド解析
+// ============================================================
+
+function parseSalesCommand(text) {
+  if (typeof text !== "string") {
+    return null;
+  }
+
+  const match = text.trim().match(
+    /^\/sales(?:@\S+)?\s+([0-9]+(?:\.[0-9]+)?)\s+([0-9]+(?:\.[0-9]+)?)$/i
+  );
+
+  if (!match) {
+    return null;
+  }
+
+  const sales = normalizeInteger(match[1]);
+  const orders = normalizeInteger(match[2]);
+
+  if (
+    sales === null ||
+    orders === null
+  ) {
+    return null;
+  }
+
+  if (
+    sales < 0 ||
+    orders < 0
+  ) {
+    return null;
+  }
+
+  return {
+    sales,
+    orders,
+  };
+}
+
+// ============================================================
+// /cancel 判定
+// ============================================================
+
+function isCancelCommand(text) {
+  if (typeof text !== "string") {
+    return false;
+  }
+
+  return /^\/cancel(?:@\S+)?(?:\s+.*)?$/i.test(
+    text.trim()
+  );
+}
+
+// ============================================================
+// /record 判定
+// ============================================================
+
+function isRecordCommand(text) {
+  if (typeof text !== "string") {
+    return false;
+  }
+
+  return /^\/record(?:@\S+)?$/i.test(
+    text.trim()
+  );
+}
+
+// ============================================================
+// /start /help
+// ============================================================
+
+function isHelpCommand(text) {
+  if (typeof text !== "string") {
+    return false;
+  }
+
+  return /^\/(?:start|help)(?:@\S+)?$/i.test(
+    text.trim()
+  );
+}
+
+// ============================================================
+// ヘルプ
+// ============================================================
+
+function buildHelpMessage() {
+  return [
+    "📦 モヘジ宅配 売上管理Bot",
+    "",
+    "使い方",
+    "",
+    "売上登録",
+    "/sales 売上 件数",
+    "",
+    "例",
+    "/sales 25000 8",
+    "",
+    "最新の売上を取消",
+    "/cancel",
+    "",
+    "現在のレポート",
+    "/record",
+  ].join("\n");
+}
+
+// ============================================================
+// エラー通知
+// ============================================================
+
+async function notifyError(chatId, error) {
+  if (!chatId) {
+    return;
+  }
+
+  const message =
+    error instanceof Error
+      ? error.message
+      : String(error);
+
+  try {
+    await sendTelegramMessage(
+      chatId,
+      [
+        "⚠️ 処理中にエラーが発生しました。",
+        "",
+        message,
+      ].join("\n")
+    );
+  } catch {
+    // エラー通知自体の失敗は無視
+  }
+}
+
+// ============================================================
+// メイン handler
+// ============================================================
+
+export default async function handler(req, res) {
+  // ----------------------------------------------------------
+  // body は catch でも参照できるよう外で宣言
+  // ----------------------------------------------------------
+
+  let body = null;
+
+  try {
+    // --------------------------------------------------------
+    // POSTのみ
+    // --------------------------------------------------------
+
     if (req.method !== "POST") {
       return res.status(405).json({
         ok: false,
@@ -1193,16 +1484,18 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // -------------------------------------------------------
-    // Request Body
-    // -------------------------------------------------------
+    // --------------------------------------------------------
+    // Request body
+    // --------------------------------------------------------
 
-    let body = req.body;
+    body = req.body;
 
-    if (typeof body === "string") {
+    if (
+      typeof body === "string"
+    ) {
       try {
         body = JSON.parse(body);
-      } catch (error) {
+      } catch {
         return res.status(400).json({
           ok: false,
           error: "Invalid JSON",
@@ -1217,28 +1510,24 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // -------------------------------------------------------
-    // Telegram Update ID
-    // -------------------------------------------------------
+    // --------------------------------------------------------
+    // Telegram update_id
+    // --------------------------------------------------------
 
     const updateId = body.update_id;
 
-    if (updateId !== undefined && updateId !== null) {
-      const processedKey =
-        `moheji:telegram:processed:${updateId}`;
+    // --------------------------------------------------------
+    // 重複Update
+    // --------------------------------------------------------
 
-      const processedResult =
-        await redisCommand([
-          "SET",
-          processedKey,
-          "1",
-          "NX",
-          "EX",
-          "86400",
-        ]);
+    if (
+      updateId !== undefined &&
+      updateId !== null
+    ) {
+      const processed =
+        await isUpdateProcessed(updateId);
 
-      // 同じTelegram updateを二重処理しない
-      if (processedResult !== "OK") {
+      if (processed) {
         return res.status(200).json({
           ok: true,
           duplicate: true,
@@ -1246,14 +1535,20 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // -------------------------------------------------------
+    // --------------------------------------------------------
     // Message
-    // -------------------------------------------------------
+    // --------------------------------------------------------
 
-    const message =
-      getMessageFromUpdate(body);
+    const message = body.message;
 
     if (!message) {
+      if (
+        updateId !== undefined &&
+        updateId !== null
+      ) {
+        await markUpdateProcessed(updateId);
+      }
+
       return res.status(200).json({
         ok: true,
         ignored: true,
@@ -1261,72 +1556,103 @@ module.exports = async function handler(req, res) {
     }
 
     const chatId =
-      message.chat &&
-      message.chat.id;
-
-    if (
-      chatId === undefined ||
-      chatId === null
-    ) {
-      return res.status(200).json({
-        ok: true,
-        ignored: true,
-      });
-    }
+      message.chat?.id;
 
     const text =
       typeof message.text === "string"
         ? message.text.trim()
         : "";
 
-    if (!text) {
+    if (!chatId) {
+      if (
+        updateId !== undefined &&
+        updateId !== null
+      ) {
+        await markUpdateProcessed(updateId);
+      }
+
       return res.status(200).json({
         ok: true,
         ignored: true,
       });
     }
 
-    // =======================================================
+    // --------------------------------------------------------
     // /record
-    // =======================================================
+    // --------------------------------------------------------
 
-    if (/^\/record(?:@\w+)?$/i.test(text)) {
-      const report = await processRecord();
+    if (isRecordCommand(text)) {
+      const report =
+        await processRecord();
 
       await sendTelegramPhoto(
         chatId,
         report
       );
 
+      // 成功後に処理済み
+      await markUpdateProcessed(updateId);
+
       return res.status(200).json({
         ok: true,
+        command: "record",
       });
     }
 
-    // =======================================================
+    // --------------------------------------------------------
     // /cancel
-    //
-    // 引数は無視する。
-    //
-    // 例：
-    // /cancel
-    // /cancel abc
-    //
-    // どちらも「最新の未キャンセル売上」を対象にする。
-    // =======================================================
+    // --------------------------------------------------------
 
-    if (/^\/cancel(?:@\w+)?(?:\s+.*)?$/i.test(text)) {
+    if (isCancelCommand(text)) {
       const result =
         await processCancel(chatId);
 
-      if (!result.ok) {
+      if (!result.success) {
+        let messageText;
+
+        switch (result.reason) {
+          case "locked":
+            messageText =
+              "⏳ 取消処理中です。少し待ってからもう一度お試しください。";
+            break;
+
+          case "already_migrated":
+            messageText =
+              "⚠️ 取消できる売上がありません。";
+            break;
+
+          case "legacy_data_not_found":
+            messageText =
+              "⚠️ 取消できる売上がありません。";
+            break;
+
+          case "aggregate_data_insufficient":
+            messageText =
+              "⚠️ 集計データを確認できないため、取消を中止しました。";
+            break;
+
+          case "already_cancelled":
+            messageText =
+              "⚠️ この売上はすでに取消されています。";
+            break;
+
+          default:
+            messageText =
+              "⚠️ 取消できる売上がありません。";
+        }
+
         await sendTelegramMessage(
           chatId,
-          result.message
+          messageText
         );
+
+        await markUpdateProcessed(updateId);
 
         return res.status(200).json({
           ok: true,
+          command: "cancel",
+          success: false,
+          reason: result.reason,
         });
       }
 
@@ -1334,10 +1660,10 @@ module.exports = async function handler(req, res) {
         await buildReport();
 
       const cancelMessage = [
-        "✅ 売上をキャンセルしました。",
+        "↩️ 売上を取消しました。",
         "",
-        `売上：¥${result.sales.toLocaleString("ja-JP")}`,
-        `件数：${result.orders.toLocaleString("ja-JP")}件`,
+        `売上：${formatYen(result.sales)}`,
+        `件数：${formatNumber(result.orders)}件`,
         `対象日：${result.dateKey}`,
         "",
         report,
@@ -1348,145 +1674,127 @@ module.exports = async function handler(req, res) {
         cancelMessage
       );
 
+      await markUpdateProcessed(updateId);
+
       return res.status(200).json({
         ok: true,
+        command: "cancel",
+        success: true,
       });
     }
 
-    // =======================================================
+    // --------------------------------------------------------
     // /sales
-    //
-    // 例：
-    // /sales 17014 17
-    // /sales@botname 17014 17
-    // =======================================================
+    // --------------------------------------------------------
 
-    const salesMatch =
-      text.match(
-        /^\/sales(?:@\w+)?(?:\s+([0-9]+(?:\.[0-9]+)?))?(?:\s+([0-9]+(?:\.[0-9]+)?))?\s*$/i
-      );
+    const salesCommand =
+      parseSalesCommand(text);
 
-    if (salesMatch) {
-      const salesArg = salesMatch[1];
-      const ordersArg = salesMatch[2];
-
-      if (
-        salesArg === undefined ||
-        ordersArg === undefined
-      ) {
-        await sendTelegramMessage(
-          chatId,
-          [
-            "⚠️ 入力形式が正しくありません。",
-            "",
-            "/sales 売上 件数",
-            "",
-            "例：",
-            "/sales 17014 17",
-          ].join("\n")
-        );
-
-        return res.status(200).json({
-          ok: true,
-        });
-      }
-
-      const sales =
-        Math.floor(
-          Number(salesArg)
-        );
-
-      const orders =
-        Math.floor(
-          Number(ordersArg)
-        );
-
-      if (
-        !Number.isFinite(sales) ||
-        !Number.isFinite(orders) ||
-        sales < 0 ||
-        orders < 0
-      ) {
-        await sendTelegramMessage(
-          chatId,
-          "⚠️ 売上と件数には0以上の数字を入力してください。"
-        );
-
-        return res.status(200).json({
-          ok: true,
-        });
-      }
+    if (salesCommand) {
+      const {
+        sales,
+        orders,
+      } = salesCommand;
 
       const result =
-        await processSales(
+        await processSales({
           chatId,
           sales,
-          orders
-        );
+          orders,
+        });
 
       const report =
         await buildReport();
 
-      const salesMessage = [
+      const messageText = [
         "✅ 売上を登録しました。",
         "",
-        `売上：¥${sales.toLocaleString("ja-JP")}`,
-        `件数：${orders.toLocaleString("ja-JP")}件`,
-        `対象日：${result.dateInfo.dateKey}`,
+        `売上：${formatYen(sales)}`,
+        `件数：${formatNumber(orders)}件`,
         "",
         report,
       ].join("\n");
 
       await sendTelegramPhoto(
         chatId,
-        salesMessage
+        messageText
       );
+
+      await markUpdateProcessed(updateId);
 
       return res.status(200).json({
         ok: true,
+        command: "sales",
+        success: true,
+        recordId: result.recordId,
       });
     }
 
-    // =======================================================
-    // その他のメッセージ
-    // =======================================================
+    // --------------------------------------------------------
+    // /start /help
+    // --------------------------------------------------------
+
+    if (isHelpCommand(text)) {
+      await sendTelegramMessage(
+        chatId,
+        buildHelpMessage()
+      );
+
+      await markUpdateProcessed(updateId);
+
+      return res.status(200).json({
+        ok: true,
+        command: "help",
+      });
+    }
+
+    // --------------------------------------------------------
+    // その他のメッセージは無視
+    // --------------------------------------------------------
+
+    await markUpdateProcessed(updateId);
 
     return res.status(200).json({
       ok: true,
       ignored: true,
     });
   } catch (error) {
-    console.error("Handler error:", error);
+    console.error(
+      "Telegram handler error:",
+      error
+    );
+
+    // --------------------------------------------------------
+    // エラー発生時のTelegram通知
+    // --------------------------------------------------------
 
     try {
-      const message =
-        body &&
-        body.message;
-
       const chatId =
-        message &&
-        message.chat &&
-        message.chat.id;
+        body?.message?.chat?.id;
 
-      if (
-        chatId !== undefined &&
-        chatId !== null
-      ) {
-        await sendTelegramMessage(
+      if (chatId) {
+        await notifyError(
           chatId,
-          "⚠️ 処理中にエラーが発生しました。もう一度お試しください。"
+          error
         );
       }
-    } catch (telegramError) {
+    } catch (notifyError) {
       console.error(
-        "Telegram error message failed:",
-        telegramError
+        "Error notification failed:",
+        notifyError
       );
     }
 
     return res.status(500).json({
       ok: false,
-      error: "Internal Server Error",
+      error:
+        error instanceof Error
+          ? error.message
+          : String(error),
     });
   }
-};
+}
+
+// ============================================================
+// 完成
+// ============================================================
