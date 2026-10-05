@@ -704,7 +704,7 @@ function buildSalesReport(stats, now = new Date()) {
       "ja-JP"
     )}件`,
     `🕐 ${formatNowJapanese(now)}`,
-    "🛵 今日も配達お疲れ様でした！",
+    "🟢 今日も配達お疲れ様でした！",
   ].join("\n");
 }
 
