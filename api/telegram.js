@@ -760,7 +760,7 @@ function buildSalesReport(
       : 0;
 
   return [
-    "🏍️ 配達売上",
+    "🏍️ 配達売上ベータ版（β版）",
     `💰 今日の売上　${todaySales.toLocaleString(
       "ja-JP"
     )}円`,
@@ -884,7 +884,7 @@ function buildHistoricalSalesReport(
       : 0;
 
   return [
-    "🏍️ 配達売上",
+    "🏍️ 配達売上ベータ版（β版）",
     `💰 ${label}の売上　${day.sales.toLocaleString(
       "ja-JP"
     )}円`,
