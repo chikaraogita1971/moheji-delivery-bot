@@ -70,7 +70,14 @@ async function redisHSet(key, data) {
 }
 
 async function redisScan(cursor, match) {
-  return await redisCommand("SCAN", String(cursor), "MATCH", match, "COUNT", "200");
+  return await redisCommand(
+    "SCAN",
+    String(cursor),
+    "MATCH",
+    match,
+    "COUNT",
+    "200"
+  );
 }
 
 /* =========================
@@ -191,6 +198,22 @@ function formatDateJapanese(dateKey) {
   return `${year}年${month}月${day}日`;
 }
 
+/*
+  過去日のレポート用
+
+  2026-10-06
+  ↓
+  10/6
+*/
+
+function formatDateShort(dateKey) {
+  const [, month, day] = String(dateKey)
+    .split("-")
+    .map(Number);
+
+  return `${month}/${day}`;
+}
+
 function formatNowJapanese(date = new Date()) {
   const p = getJstParts(date);
 
@@ -204,7 +227,9 @@ function formatNowJapanese(date = new Date()) {
 ========================= */
 
 function parseDateKey(dateKey) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateKey));
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(
+    String(dateKey)
+  );
 
   if (!match) {
     return null;
@@ -224,7 +249,9 @@ function parseDateKey(dateKey) {
     return null;
   }
 
-  const check = new Date(Date.UTC(year, month - 1, day));
+  const check = new Date(
+    Date.UTC(year, month - 1, day)
+  );
 
   if (
     check.getUTCFullYear() !== year ||
@@ -242,7 +269,9 @@ function parseDateKey(dateKey) {
 }
 
 function daysInMonth(year, month) {
-  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return new Date(
+    Date.UTC(year, month, 0)
+  ).getUTCDate();
 }
 
 /* =========================
@@ -288,14 +317,22 @@ async function sendPhoto(chatId, photo, caption) {
   });
 }
 
-async function answerCallbackQuery(callbackQueryId, text = "") {
+async function answerCallbackQuery(
+  callbackQueryId,
+  text = ""
+) {
   return await telegram("answerCallbackQuery", {
     callback_query_id: callbackQueryId,
     text,
   });
 }
 
-async function editMessageText(chatId, messageId, text, extra = {}) {
+async function editMessageText(
+  chatId,
+  messageId,
+  text,
+  extra = {}
+) {
   return await telegram("editMessageText", {
     chat_id: chatId,
     message_id: messageId,
@@ -321,7 +358,8 @@ function pendingKey(chatId) {
 ========================= */
 
 function normalizeRecord(raw, key = "") {
-  const data = raw && typeof raw === "object" ? raw : {};
+  const data =
+    raw && typeof raw === "object" ? raw : {};
 
   const keyParts = key.split(":");
 
@@ -337,7 +375,9 @@ function normalizeRecord(raw, key = "") {
     (keyParts.length >= 5 ? keyParts[4] : "");
 
   const sales = Number(data.sales || 0);
-  const orders = Number(data.orders || data.count || 0);
+  const orders = Number(
+    data.orders || data.count || 0
+  );
 
   const deliveryDate =
     data.deliveryDate ||
@@ -352,9 +392,11 @@ function normalizeRecord(raw, key = "") {
     "";
 
   const cancelled =
-    String(data.cancelled).toLowerCase() === "true" ||
+    String(data.cancelled).toLowerCase() ===
+      "true" ||
     String(data.cancelled) === "1" ||
-    String(data.status).toLowerCase() === "cancelled";
+    String(data.status).toLowerCase() ===
+      "cancelled";
 
   return {
     key,
@@ -374,15 +416,22 @@ function normalizeRecord(raw, key = "") {
 ========================= */
 
 async function getUserRecordKeys(chatId) {
-  const pattern = `moheji:delivery:record:${chatId}:*`;
+  const pattern =
+    `moheji:delivery:record:${chatId}:*`;
 
   let cursor = "0";
   const keys = [];
 
   do {
-    const result = await redisScan(cursor, pattern);
+    const result = await redisScan(
+      cursor,
+      pattern
+    );
 
-    if (!Array.isArray(result) || result.length < 2) {
+    if (
+      !Array.isArray(result) ||
+      result.length < 2
+    ) {
       break;
     }
 
@@ -407,7 +456,9 @@ async function getUserRecords(chatId) {
       let raw;
 
       if (type === "hash") {
-        raw = hashArrayToObject(await redisHGetAll(key));
+        raw = hashArrayToObject(
+          await redisHGetAll(key)
+        );
       } else if (type === "string") {
         const value = await redisGet(key);
 
@@ -426,7 +477,11 @@ async function getUserRecords(chatId) {
         records.push(record);
       }
     } catch (error) {
-      console.error("Failed to read record:", key, error);
+      console.error(
+        "Failed to read record:",
+        key,
+        error
+      );
     }
   }
 
@@ -443,11 +498,15 @@ async function createSalesRecord(
   orders,
   deliveryDate
 ) {
-  const recordId = `${Date.now()}-${Math.random()
-    .toString(36)
-    .slice(2, 8)}`;
+  const recordId =
+    `${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
 
-  const key = recordKey(chatId, recordId);
+  const key = recordKey(
+    chatId,
+    recordId
+  );
 
   const now = new Date().toISOString();
 
@@ -480,23 +539,6 @@ async function createSalesRecord(
    Daily aggregation
 ========================= */
 
-/*
-  ここが今回の重要部分。
-
-  同じ日に複数レコードがあっても、
-
-  2026-10-05
-    100円 1件
-    500円 5件
-
-  ↓
-
-  2026-10-05
-    600円 6件
-
-  として扱う。
-*/
-
 function aggregateByDay(records) {
   const daily = {};
 
@@ -519,8 +561,11 @@ function aggregateByDay(records) {
       };
     }
 
-    daily[dateKey].sales += Number(record.sales || 0);
-    daily[dateKey].orders += Number(record.orders || 0);
+    daily[dateKey].sales +=
+      Number(record.sales || 0);
+
+    daily[dateKey].orders +=
+      Number(record.orders || 0);
   }
 
   return daily;
@@ -529,8 +574,9 @@ function aggregateByDay(records) {
 function getDailyList(records) {
   const daily = aggregateByDay(records);
 
-  return Object.values(daily).sort((a, b) =>
-    a.dateKey.localeCompare(b.dateKey)
+  return Object.values(daily).sort(
+    (a, b) =>
+      a.dateKey.localeCompare(b.dateKey)
   );
 }
 
@@ -538,10 +584,15 @@ function getDailyList(records) {
    Stats
 ========================= */
 
-function calculateStats(records, now = new Date()) {
+function calculateStats(
+  records,
+  now = new Date()
+) {
   const todayKey = getTodayDateKey(now);
-  const todayMonthKey = getMonthKey(todayKey);
-  const todayYearKey = getYearKey(todayKey);
+  const todayMonthKey =
+    getMonthKey(todayKey);
+  const todayYearKey =
+    getYearKey(todayKey);
 
   const daily = aggregateByDay(records);
 
@@ -560,7 +611,10 @@ function calculateStats(records, now = new Date()) {
   const monthDays = [];
 
   for (const day of Object.values(daily)) {
-    if (getMonthKey(day.dateKey) !== todayMonthKey) {
+    if (
+      getMonthKey(day.dateKey) !==
+      todayMonthKey
+    ) {
       continue;
     }
 
@@ -571,48 +625,60 @@ function calculateStats(records, now = new Date()) {
   }
 
   /*
-    稼働日数 = 今月、実際に売上または件数がある日数
+    稼働日数
   */
 
-  const workingDays = monthDays.filter(
-    (day) => day.sales > 0 || day.orders > 0
-  );
+  const workingDays =
+    monthDays.filter(
+      (day) =>
+        day.sales > 0 ||
+        day.orders > 0
+    );
 
-  const workingDayCount = workingDays.length;
+  const workingDayCount =
+    workingDays.length;
 
   /*
     平均売上／日
-    = 今月売上 ÷ 稼働日数
   */
 
   const averageSalesPerDay =
     workingDayCount > 0
-      ? Math.round(monthSales / workingDayCount)
+      ? Math.round(
+          monthSales /
+            workingDayCount
+        )
       : 0;
 
   /*
     月間最高売上
-    = 「日別売上」の最大値
   */
 
   let monthlyBestSales = 0;
 
   for (const day of monthDays) {
-    if (day.sales > monthlyBestSales) {
-      monthlyBestSales = day.sales;
+    if (
+      day.sales >
+      monthlyBestSales
+    ) {
+      monthlyBestSales =
+        day.sales;
     }
   }
 
   /*
     月間最高件数
-    = 「日別件数」の最大値
   */
 
   let monthlyBestOrders = 0;
 
   for (const day of monthDays) {
-    if (day.orders > monthlyBestOrders) {
-      monthlyBestOrders = day.orders;
+    if (
+      day.orders >
+      monthlyBestOrders
+    ) {
+      monthlyBestOrders =
+        day.orders;
     }
   }
 
@@ -622,7 +688,10 @@ function calculateStats(records, now = new Date()) {
   let yearOrders = 0;
 
   for (const day of Object.values(daily)) {
-    if (getYearKey(day.dateKey) !== todayYearKey) {
+    if (
+      getYearKey(day.dateKey) !==
+      todayYearKey
+    ) {
       continue;
     }
 
@@ -663,33 +732,62 @@ function calculateStats(records, now = new Date()) {
    Sales report
 ========================= */
 
-function buildSalesReport(stats, now = new Date()) {
-  const todaySales = stats.todaySales;
-  const todayOrders = stats.todayOrders;
+function buildSalesReport(
+  stats,
+  now = new Date()
+) {
+  const todaySales =
+    stats.todaySales;
+
+  const todayOrders =
+    stats.todayOrders;
 
   const oneOrderAverage =
     todayOrders > 0
-      ? Math.round(todaySales / todayOrders)
+      ? Math.round(
+          todaySales /
+            todayOrders
+        )
       : 0;
 
   const achievement =
     MONTHLY_TARGET > 0
-      ? Math.round((stats.monthSales / MONTHLY_TARGET) * 100)
+      ? Math.round(
+          (stats.monthSales /
+            MONTHLY_TARGET) *
+            100
+        )
       : 0;
 
   return [
     "🏍️ 配達売上",
-    `💰 今日の売上　${todaySales.toLocaleString("ja-JP")}円`,
-    `📦 今日の件数　${todayOrders.toLocaleString("ja-JP")}件`,
-    `💵 1件あたり　${oneOrderAverage.toLocaleString("ja-JP")}円`,
-    `📅 今月売上　${stats.monthSales.toLocaleString("ja-JP")}円`,
-    `📦 今月件数　${stats.monthOrders.toLocaleString("ja-JP")}件`,
-    `🗓️ 年間売上　${stats.yearSales.toLocaleString("ja-JP")}円`,
-    `📦 年間件数　${stats.yearOrders.toLocaleString("ja-JP")}件`,
+    `💰 今日の売上　${todaySales.toLocaleString(
+      "ja-JP"
+    )}円`,
+    `📦 今日の件数　${todayOrders.toLocaleString(
+      "ja-JP"
+    )}件`,
+    `💵 1件あたり　${oneOrderAverage.toLocaleString(
+      "ja-JP"
+    )}円`,
+    `📅 今月売上　${stats.monthSales.toLocaleString(
+      "ja-JP"
+    )}円`,
+    `📦 今月件数　${stats.monthOrders.toLocaleString(
+      "ja-JP"
+    )}件`,
+    `🗓️ 年間売上　${stats.yearSales.toLocaleString(
+      "ja-JP"
+    )}円`,
+    `📦 年間件数　${stats.yearOrders.toLocaleString(
+      "ja-JP"
+    )}件`,
     `📈 平均売上／日　${stats.averageSalesPerDay.toLocaleString(
       "ja-JP"
     )}円`,
-    `🎯 月間目標　${MONTHLY_TARGET.toLocaleString("ja-JP")}円`,
+    `🎯 月間目標　${MONTHLY_TARGET.toLocaleString(
+      "ja-JP"
+    )}円`,
     `📊 目標達成率　${achievement}%`,
     `🏆 月間最高売上　${stats.monthlyBestSales.toLocaleString(
       "ja-JP"
@@ -709,93 +807,346 @@ function buildSalesReport(stats, now = new Date()) {
 }
 
 async function sendSalesReport(chatId) {
-  const records = await getUserRecords(chatId);
+  const records =
+    await getUserRecords(chatId);
 
-  const stats = calculateStats(records);
+  const stats =
+    calculateStats(records);
 
-  const report = buildSalesReport(stats);
+  const report =
+    buildSalesReport(stats);
 
   if (PHOTO_URL) {
     try {
-      await sendPhoto(chatId, PHOTO_URL, report);
+      await sendPhoto(
+        chatId,
+        PHOTO_URL,
+        report
+      );
       return;
     } catch (error) {
-      console.error("sendPhoto failed:", error);
+      console.error(
+        "sendPhoto failed:",
+        error
+      );
     }
   }
 
-  await sendMessage(chatId, report);
+  await sendMessage(
+    chatId,
+    report
+  );
+}
+
+/* =========================
+   Historical sales report
+========================= */
+
+/*
+  過去の日付を登録した場合専用。
+
+  例：
+
+  🏍️ 配達売上
+  💰 10/6の売上　11,447円
+  📦 10/6の件数　17件
+  💵 1件あたり　674円
+  📅 今月売上　67,204円
+  📦 今月件数　83件
+  🗓️ 年間売上　XXX円
+  ...
+*/
+
+function buildHistoricalSalesReport(
+  dateKey,
+  day,
+  stats,
+  now = new Date()
+) {
+  const label =
+    formatDateShort(dateKey);
+
+  const oneOrderAverage =
+    day.orders > 0
+      ? Math.round(
+          day.sales /
+            day.orders
+        )
+      : 0;
+
+  const achievement =
+    MONTHLY_TARGET > 0
+      ? Math.round(
+          (stats.monthSales /
+            MONTHLY_TARGET) *
+            100
+        )
+      : 0;
+
+  return [
+    "🏍️ 配達売上",
+    `💰 ${label}の売上　${day.sales.toLocaleString(
+      "ja-JP"
+    )}円`,
+    `📦 ${label}の件数　${day.orders.toLocaleString(
+      "ja-JP"
+    )}件`,
+    `💵 1件あたり　${oneOrderAverage.toLocaleString(
+      "ja-JP"
+    )}円`,
+    `📅 今月売上　${stats.monthSales.toLocaleString(
+      "ja-JP"
+    )}円`,
+    `📦 今月件数　${stats.monthOrders.toLocaleString(
+      "ja-JP"
+    )}件`,
+    `🗓️ 年間売上　${stats.yearSales.toLocaleString(
+      "ja-JP"
+    )}円`,
+    `📦 年間件数　${stats.yearOrders.toLocaleString(
+      "ja-JP"
+    )}件`,
+    `📈 平均売上／日　${stats.averageSalesPerDay.toLocaleString(
+      "ja-JP"
+    )}円`,
+    `🎯 月間目標　${MONTHLY_TARGET.toLocaleString(
+      "ja-JP"
+    )}円`,
+    `📊 目標達成率　${achievement}%`,
+    `🏆 月間最高売上　${stats.monthlyBestSales.toLocaleString(
+      "ja-JP"
+    )}円`,
+    `🏆 月間最高件数　${stats.monthlyBestOrders.toLocaleString(
+      "ja-JP"
+    )}件`,
+    `📆 稼働日数　${stats.workingDayCount.toLocaleString(
+      "ja-JP"
+    )}日`,
+    `🛵 累計配達件数　${stats.totalOrders.toLocaleString(
+      "ja-JP"
+    )}件`,
+    `🕐 ${formatNowJapanese(now)}`,
+    "🟢 今日も配達お疲れ様でした！",
+  ].join("\n");
+}
+
+async function sendHistoricalSalesReport(
+  chatId,
+  dateKey
+) {
+  const records =
+    await getUserRecords(chatId);
+
+  /*
+    同じ日に複数回登録されていても、
+    その日の合計を表示する。
+  */
+
+  const daily =
+    aggregateByDay(records);
+
+  const day =
+    daily[dateKey] || {
+      dateKey,
+      sales: 0,
+      orders: 0,
+    };
+
+  /*
+    今月・年間・最高売上などは
+    既存の計算ロジックをそのまま使用。
+  */
+
+  const stats =
+    calculateStats(records);
+
+  const report =
+    buildHistoricalSalesReport(
+      dateKey,
+      day,
+      stats
+    );
+
+  if (PHOTO_URL) {
+    try {
+      await sendPhoto(
+        chatId,
+        PHOTO_URL,
+        report
+      );
+      return;
+    } catch (error) {
+      console.error(
+        "sendPhoto failed:",
+        error
+      );
+    }
+  }
+
+  await sendMessage(
+    chatId,
+    report
+  );
 }
 
 /* =========================
    Calendar
 ========================= */
 
-function shiftMonth(year, month, diff) {
-  const date = new Date(Date.UTC(year, month - 1 + diff, 1));
+function shiftMonth(
+  year,
+  month,
+  diff
+) {
+  const date = new Date(
+    Date.UTC(
+      year,
+      month - 1 + diff,
+      1
+    )
+  );
 
   return {
-    year: date.getUTCFullYear(),
-    month: date.getUTCMonth() + 1,
+    year:
+      date.getUTCFullYear(),
+    month:
+      date.getUTCMonth() + 1,
   };
 }
 
-function buildCalendar(year, month) {
-  const todayKey = getTodayDateKey();
-  const todayParts = parseDateKey(todayKey);
+function buildCalendar(
+  year,
+  month
+) {
+  const todayKey =
+    getTodayDateKey();
 
-  const firstDay = new Date(Date.UTC(year, month - 1, 1));
-  const startWeekday = firstDay.getUTCDay();
+  const todayParts =
+    parseDateKey(todayKey);
 
-  const totalDays = daysInMonth(year, month);
+  const firstDay =
+    new Date(
+      Date.UTC(
+        year,
+        month - 1,
+        1
+      )
+    );
+
+  const startWeekday =
+    firstDay.getUTCDay();
+
+  const totalDays =
+    daysInMonth(
+      year,
+      month
+    );
 
   const keyboard = [];
 
-  const previous = shiftMonth(year, month, -1);
-  const next = shiftMonth(year, month, 1);
+  const previous =
+    shiftMonth(
+      year,
+      month,
+      -1
+    );
+
+  const next =
+    shiftMonth(
+      year,
+      month,
+      1
+    );
 
   keyboard.push([
     {
       text: "‹",
-      callback_data: `cal:${previous.year}-${pad2(
-        previous.month
-      )}-01`,
+      callback_data:
+        `cal:${previous.year}-${pad2(
+          previous.month
+        )}-01`,
     },
     {
-      text: `${year}年${month}月`,
-      callback_data: "cal:none",
+      text:
+        `${year}年${month}月`,
+      callback_data:
+        "cal:none",
     },
     {
       text: "›",
-      callback_data: `cal:${next.year}-${pad2(
-        next.month
-      )}-01`,
+      callback_data:
+        `cal:${next.year}-${pad2(
+          next.month
+        )}-01`,
     },
   ]);
 
   keyboard.push([
-    { text: "日", callback_data: "cal:none" },
-    { text: "月", callback_data: "cal:none" },
-    { text: "火", callback_data: "cal:none" },
-    { text: "水", callback_data: "cal:none" },
-    { text: "木", callback_data: "cal:none" },
-    { text: "金", callback_data: "cal:none" },
-    { text: "土", callback_data: "cal:none" },
+    {
+      text: "日",
+      callback_data:
+        "cal:none",
+    },
+    {
+      text: "月",
+      callback_data:
+        "cal:none",
+    },
+    {
+      text: "火",
+      callback_data:
+        "cal:none",
+    },
+    {
+      text: "水",
+      callback_data:
+        "cal:none",
+    },
+    {
+      text: "木",
+      callback_data:
+        "cal:none",
+    },
+    {
+      text: "金",
+      callback_data:
+        "cal:none",
+    },
+    {
+      text: "土",
+      callback_data:
+        "cal:none",
+    },
   ]);
 
   let week = [];
 
-  for (let i = 0; i < startWeekday; i++) {
+  for (
+    let i = 0;
+    i < startWeekday;
+    i++
+  ) {
     week.push({
       text: " ",
-      callback_data: "cal:none",
+      callback_data:
+        "cal:none",
     });
   }
 
-  for (let day = 1; day <= totalDays; day++) {
-    const dateKey = makeDateKey(year, month, day);
+  for (
+    let day = 1;
+    day <= totalDays;
+    day++
+  ) {
+    const dateKey =
+      makeDateKey(
+        year,
+        month,
+        day
+      );
 
-    let label = String(day);
+    let label =
+      String(day);
 
     if (
       todayParts &&
@@ -808,7 +1159,8 @@ function buildCalendar(year, month) {
 
     week.push({
       text: label,
-      callback_data: `date:${dateKey}`,
+      callback_data:
+        `date:${dateKey}`,
     });
 
     if (week.length === 7) {
@@ -821,7 +1173,8 @@ function buildCalendar(year, month) {
     while (week.length < 7) {
       week.push({
         text: " ",
-        callback_data: "cal:none",
+        callback_data:
+          "cal:none",
       });
     }
 
@@ -831,37 +1184,62 @@ function buildCalendar(year, month) {
   keyboard.push([
     {
       text: "今日",
-      callback_data: `date:${todayKey}`,
+      callback_data:
+        `date:${todayKey}`,
     },
   ]);
 
   return keyboard;
 }
 
-async function showCalendar(chatId, messageId = null, year = null, month = null) {
-  const today = getJstParts();
+async function showCalendar(
+  chatId,
+  messageId = null,
+  year = null,
+  month = null
+) {
+  const today =
+    getJstParts();
 
-  const targetYear = year || today.year;
-  const targetMonth = month || today.month;
+  const targetYear =
+    year || today.year;
 
-  const keyboard = buildCalendar(targetYear, targetMonth);
+  const targetMonth =
+    month || today.month;
+
+  const keyboard =
+    buildCalendar(
+      targetYear,
+      targetMonth
+    );
 
   const text =
     "📅 配達日を選択してください\n\n" +
     "売上を登録する日をカレンダーから選んでください。";
 
   if (messageId) {
-    await editMessageText(chatId, messageId, text, {
-      reply_markup: {
-        inline_keyboard: keyboard,
-      },
-    });
+    await editMessageText(
+      chatId,
+      messageId,
+      text,
+      {
+        reply_markup: {
+          inline_keyboard:
+            keyboard,
+        },
+      }
+    );
   } else {
-    await sendMessage(chatId, text, {
-      reply_markup: {
-        inline_keyboard: keyboard,
-      },
-    });
+    await sendMessage(
+      chatId,
+      text,
+      {
+        reply_markup: {
+          inline_keyboard:
+            keyboard,
+        },
+      }
+    );
   }
 }
 
@@ -869,16 +1247,30 @@ async function showCalendar(chatId, messageId = null, year = null, month = null)
    Pending date
 ========================= */
 
-async function setPendingDate(chatId, dateKey) {
-  await redisSet(pendingKey(chatId), dateKey);
+async function setPendingDate(
+  chatId,
+  dateKey
+) {
+  await redisSet(
+    pendingKey(chatId),
+    dateKey
+  );
 }
 
-async function getPendingDate(chatId) {
-  return await redisGet(pendingKey(chatId));
+async function getPendingDate(
+  chatId
+) {
+  return await redisGet(
+    pendingKey(chatId)
+  );
 }
 
-async function clearPendingDate(chatId) {
-  await redisDel(pendingKey(chatId));
+async function clearPendingDate(
+  chatId
+) {
+  await redisDel(
+    pendingKey(chatId)
+  );
 }
 
 /* =========================
@@ -886,31 +1278,45 @@ async function clearPendingDate(chatId) {
 ========================= */
 
 function parseSalesInput(text) {
-  const parts = String(text)
-    .trim()
-    .split(/\s+/);
+  const parts =
+    String(text)
+      .trim()
+      .split(/\s+/);
 
   if (parts.length !== 2) {
     return null;
   }
 
-  const sales = Number(
-    String(parts[0]).replace(/,/g, "")
-  );
+  const sales =
+    Number(
+      String(parts[0])
+        .replace(/,/g, "")
+    );
 
-  const orders = Number(
-    String(parts[1]).replace(/,/g, "")
-  );
+  const orders =
+    Number(
+      String(parts[1])
+        .replace(/,/g, "")
+    );
 
-  if (!Number.isFinite(sales) || !Number.isFinite(orders)) {
+  if (
+    !Number.isFinite(sales) ||
+    !Number.isFinite(orders)
+  ) {
     return null;
   }
 
-  if (sales < 0 || orders < 0) {
+  if (
+    sales < 0 ||
+    orders < 0
+  ) {
     return null;
   }
 
-  if (!Number.isInteger(sales) || !Number.isInteger(orders)) {
+  if (
+    !Number.isInteger(sales) ||
+    !Number.isInteger(orders)
+  ) {
     return null;
   }
 
@@ -919,12 +1325,14 @@ function parseSalesInput(text) {
     orders,
   };
 }
-
 /* =========================
    /sales
 ========================= */
 
-async function handleSales(chatId, args) {
+async function handleSales(
+  chatId,
+  args
+) {
   /*
     /sales
     → カレンダー
@@ -941,13 +1349,17 @@ async function handleSales(chatId, args) {
   */
 
   if (args.length === 2) {
-    const sales = Number(
-      String(args[0]).replace(/,/g, "")
-    );
+    const sales =
+      Number(
+        String(args[0])
+          .replace(/,/g, "")
+      );
 
-    const orders = Number(
-      String(args[1]).replace(/,/g, "")
-    );
+    const orders =
+      Number(
+        String(args[1])
+          .replace(/,/g, "")
+      );
 
     if (
       !Number.isInteger(sales) ||
@@ -962,7 +1374,8 @@ async function handleSales(chatId, args) {
       return;
     }
 
-    const deliveryDate = getTodayDateKey();
+    const deliveryDate =
+      getTodayDateKey();
 
     await createSalesRecord(
       chatId,
@@ -977,10 +1390,20 @@ async function handleSales(chatId, args) {
         deliveryDate
       )}\n💰 売上　${sales.toLocaleString(
         "ja-JP"
-      )}円\n📦 件数　${orders.toLocaleString("ja-JP")}件`
+      )}円\n📦 件数　${orders.toLocaleString(
+        "ja-JP"
+      )}件`
     );
 
-    await sendSalesReport(chatId);
+    /*
+      直接 /sales で登録した場合は
+      今日の通常レポートのまま。
+    */
+
+    await sendSalesReport(
+      chatId
+    );
+
     return;
   }
 
@@ -998,22 +1421,35 @@ async function handleSales(chatId, args) {
    Calendar date selection
 ========================= */
 
-async function handleCalendarCallback(callbackQuery) {
-  const callbackId = callbackQuery.id;
-  const data = callbackQuery.data || "";
+async function handleCalendarCallback(
+  callbackQuery
+) {
+  const callbackId =
+    callbackQuery.id;
 
-  const message = callbackQuery.message;
+  const data =
+    callbackQuery.data || "";
+
+  const message =
+    callbackQuery.message;
 
   if (!message) {
-    await answerCallbackQuery(callbackId);
+    await answerCallbackQuery(
+      callbackId
+    );
     return;
   }
 
-  const chatId = message.chat.id;
-  const messageId = message.message_id;
+  const chatId =
+    message.chat.id;
+
+  const messageId =
+    message.message_id;
 
   if (data === "cal:none") {
-    await answerCallbackQuery(callbackId);
+    await answerCallbackQuery(
+      callbackId
+    );
     return;
   }
 
@@ -1022,9 +1458,11 @@ async function handleCalendarCallback(callbackQuery) {
   */
 
   if (data.startsWith("cal:")) {
-    const dateKey = data.slice(4);
+    const dateKey =
+      data.slice(4);
 
-    const parsed = parseDateKey(dateKey);
+    const parsed =
+      parseDateKey(dateKey);
 
     if (!parsed) {
       await answerCallbackQuery(
@@ -1034,7 +1472,9 @@ async function handleCalendarCallback(callbackQuery) {
       return;
     }
 
-    await answerCallbackQuery(callbackId);
+    await answerCallbackQuery(
+      callbackId
+    );
 
     await showCalendar(
       chatId,
@@ -1051,9 +1491,12 @@ async function handleCalendarCallback(callbackQuery) {
   */
 
   if (data.startsWith("date:")) {
-    const dateKey = data.slice(5);
+    const dateKey =
+      data.slice(5);
 
-    if (!parseDateKey(dateKey)) {
+    if (
+      !parseDateKey(dateKey)
+    ) {
       await answerCallbackQuery(
         callbackId,
         "日付が正しくありません"
@@ -1061,11 +1504,16 @@ async function handleCalendarCallback(callbackQuery) {
       return;
     }
 
-    await setPendingDate(chatId, dateKey);
+    await setPendingDate(
+      chatId,
+      dateKey
+    );
 
     await answerCallbackQuery(
       callbackId,
-      `${formatDateJapanese(dateKey)}を選択しました`
+      `${formatDateJapanese(
+        dateKey
+      )}を選択しました`
     );
 
     await editMessageText(
@@ -1079,21 +1527,30 @@ async function handleCalendarCallback(callbackQuery) {
     return;
   }
 
-  await answerCallbackQuery(callbackId);
+  await answerCallbackQuery(
+    callbackId
+  );
 }
 
 /* =========================
    Pending sales input
 ========================= */
 
-async function handlePendingSalesInput(chatId, text) {
-  const dateKey = await getPendingDate(chatId);
+async function handlePendingSalesInput(
+  chatId,
+  text
+) {
+  const dateKey =
+    await getPendingDate(
+      chatId
+    );
 
   if (!dateKey) {
     return false;
   }
 
-  const parsed = parseSalesInput(text);
+  const parsed =
+    parseSalesInput(text);
 
   if (!parsed) {
     await sendMessage(
@@ -1113,7 +1570,9 @@ async function handlePendingSalesInput(chatId, text) {
     dateKey
   );
 
-  await clearPendingDate(chatId);
+  await clearPendingDate(
+    chatId
+  );
 
   await sendMessage(
     chatId,
@@ -1127,10 +1586,35 @@ async function handlePendingSalesInput(chatId, text) {
   );
 
   /*
-    登録後は必ず最新の売上レポートを再計算
+    今回の変更点。
+
+    今日を選択した場合
+    → 今まで通り sendSalesReport()
+
+    過去日を選択した場合
+    → 選択した日付のレポートを表示
+
+    これにより、
+
+    過去日を登録したのに
+    「今日の売上 0円」
+
+    と表示される問題を解消。
   */
 
-  await sendSalesReport(chatId);
+  const todayKey =
+    getTodayDateKey();
+
+  if (dateKey === todayKey) {
+    await sendSalesReport(
+      chatId
+    );
+  } else {
+    await sendHistoricalSalesReport(
+      chatId,
+      dateKey
+    );
+  }
 
   return true;
 }
@@ -1139,7 +1623,10 @@ async function handlePendingSalesInput(chatId, text) {
    /cancel
 ========================= */
 
-async function handleCancel(chatId, args) {
+async function handleCancel(
+  chatId,
+  args
+) {
   if (args.length !== 0) {
     await sendMessage(
       chatId,
@@ -1148,13 +1635,20 @@ async function handleCancel(chatId, args) {
     return;
   }
 
-  const records = await getUserRecords(chatId);
+  const records =
+    await getUserRecords(
+      chatId
+    );
 
-  const activeRecords = records.filter(
-    (record) => !record.cancelled
-  );
+  const activeRecords =
+    records.filter(
+      (record) =>
+        !record.cancelled
+    );
 
-  if (activeRecords.length === 0) {
+  if (
+    activeRecords.length === 0
+  ) {
     await sendMessage(
       chatId,
       "↩️ 取消できる配達実績がありません。"
@@ -1163,18 +1657,27 @@ async function handleCancel(chatId, args) {
   }
 
   activeRecords.sort(
-    (a, b) => b.timestamp - a.timestamp
+    (a, b) =>
+      b.timestamp -
+      a.timestamp
   );
 
-  const target = activeRecords[0];
+  const target =
+    activeRecords[0];
 
-  await redisHSet(target.key, {
-    cancelled: 1,
-    status: "cancelled",
-    cancelledAt: new Date().toISOString(),
-  });
+  await redisHSet(
+    target.key,
+    {
+      cancelled: 1,
+      status: "cancelled",
+      cancelledAt:
+        new Date().toISOString(),
+    }
+  );
 
-  await clearPendingDate(chatId);
+  await clearPendingDate(
+    chatId
+  );
 
   await sendMessage(
     chatId,
@@ -1194,14 +1697,19 @@ async function handleCancel(chatId, args) {
     取消後も全レコードから再計算
   */
 
-  await sendSalesReport(chatId);
+  await sendSalesReport(
+    chatId
+  );
 }
 
 /* =========================
    /reset
 ========================= */
 
-async function handleReset(chatId, args) {
+async function handleReset(
+  chatId,
+  args
+) {
   if (args.length !== 0) {
     await sendMessage(
       chatId,
@@ -1210,7 +1718,10 @@ async function handleReset(chatId, args) {
     return;
   }
 
-  const keys = await getUserRecordKeys(chatId);
+  const keys =
+    await getUserRecordKeys(
+      chatId
+    );
 
   let deleted = 0;
 
@@ -1219,7 +1730,9 @@ async function handleReset(chatId, args) {
     deleted++;
   }
 
-  await clearPendingDate(chatId);
+  await clearPendingDate(
+    chatId
+  );
 
   await sendMessage(
     chatId,
@@ -1232,22 +1745,28 @@ async function handleReset(chatId, args) {
 ========================= */
 
 function parseCommand(text) {
-  const trimmed = String(text || "").trim();
+  const trimmed =
+    String(text || "").trim();
 
   if (!trimmed.startsWith("/")) {
     return null;
   }
 
-  const parts = trimmed.split(/\s+/);
+  const parts =
+    trimmed.split(/\s+/);
 
-  let command = parts[0];
+  let command =
+    parts[0];
 
   /*
     /sales@botname
     → /sales
   */
 
-  command = command.split("@")[0].toLowerCase();
+  command =
+    command
+      .split("@")[0]
+      .toLowerCase();
 
   return {
     command,
@@ -1259,11 +1778,15 @@ function parseCommand(text) {
    Main webhook
 ========================= */
 
-export default async function handler(req, res) {
+export default async function handler(
+  req,
+  res
+) {
   if (req.method !== "POST") {
     res.status(200).json({
       ok: true,
     });
+
     return;
   }
 
@@ -1275,7 +1798,8 @@ export default async function handler(req, res) {
 
       res.status(500).json({
         ok: false,
-        error: "Redis environment variables are missing.",
+        error:
+          "Redis environment variables are missing.",
       });
 
       return;
@@ -1287,7 +1811,10 @@ export default async function handler(req, res) {
       Telegram callback query
     */
 
-    if (update && update.callback_query) {
+    if (
+      update &&
+      update.callback_query
+    ) {
       await handleCalendarCallback(
         update.callback_query
       );
@@ -1303,9 +1830,14 @@ export default async function handler(req, res) {
       Telegram message
     */
 
-    const message = update && update.message;
+    const message =
+      update &&
+      update.message;
 
-    if (!message || !message.chat) {
+    if (
+      !message ||
+      !message.chat
+    ) {
       res.status(200).json({
         ok: true,
       });
@@ -1313,10 +1845,12 @@ export default async function handler(req, res) {
       return;
     }
 
-    const chatId = message.chat.id;
+    const chatId =
+      message.chat.id;
 
     const text =
-      typeof message.text === "string"
+      typeof message.text ===
+      "string"
         ? message.text.trim()
         : "";
 
@@ -1332,10 +1866,13 @@ export default async function handler(req, res) {
       コマンド
     */
 
-    const parsedCommand = parseCommand(text);
+    const parsedCommand =
+      parseCommand(text);
 
     if (parsedCommand) {
-      switch (parsedCommand.command) {
+      switch (
+        parsedCommand.command
+      ) {
         case "/sales":
           await handleSales(
             chatId,
@@ -1406,7 +1943,10 @@ export default async function handler(req, res) {
       ok: true,
     });
   } catch (error) {
-    console.error("Webhook error:", error);
+    console.error(
+      "Webhook error:",
+      error
+    );
 
     /*
       Telegramには200を返して、
